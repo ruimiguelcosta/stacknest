@@ -1,0 +1,62 @@
+name: Build PHP runtimes
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: PHP ${{ matrix.php }}
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["8.1", "8.2", "8.3", "8.4", "8.5"]
+    env:
+      PHP_VERSION: ${{ matrix.php }}
+      EXTENSIONS: bcmath,bz2,calendar,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,pgsql,phar,posix,redis,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib
+    steps:
+      - name: Install spc
+        run: |
+          curl -fsSL -o spc https://dl.static-php.dev/v3/spc-bin/nightly/spc-macos-aarch64
+          chmod +x spc
+          ./spc --version
+
+      - name: Prepare build tools
+        run: ./spc doctor --auto-fix
+
+      - name: Build PHP
+        run: >
+          ./spc build:php "$EXTENSIONS"
+          --build-cli --build-fpm --build-shared=xdebug
+          --with-packages=freetype,libjpeg,libwebp
+          --dl-with-php="$PHP_VERSION"
+
+      - name: Verify modules
+        run: |
+          buildroot/bin/php-fpm -m > modules.txt
+          cat modules.txt
+          for module in "Zend OPcache" mysqli pdo_mysql pdo_pgsql pgsql pdo_sqlite redis intl gd sodium zip; do
+            grep -qix "$module" modules.txt || { echo "Missing module: $module"; exit 1; }
+          done
+          so=$(find buildroot -name xdebug.so -print -quit)
+          test -n "$so"
+          buildroot/bin/php -d "zend_extension=$PWD/$so" -m | grep -qix xdebug
+          echo "XDEBUG_SO=$so" >> "$GITHUB_ENV"
+
+      - name: Package
+        run: |
+          full=$(buildroot/bin/php -r 'echo PHP_VERSION;')
+          mkdir -p runtime/bin runtime/lib dist
+          cp buildroot/bin/php buildroot/bin/php-fpm runtime/bin/
+          cp "$XDEBUG_SO" runtime/lib/
+          tar -czf "dist/php-$full-macos-aarch64.tar.gz" -C runtime bin lib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: php-${{ matrix.php }}-macos-aarch64
+          path: dist/*.tar.gz
+          if-no-files-found: error
