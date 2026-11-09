@@ -21,7 +21,7 @@ const (
 	OfferedMajors = 3
 )
 
-// SupportedPHP lists the PHP versions devstack can run, newest first.
+// SupportedPHP lists the PHP versions stacknest can run, newest first.
 var SupportedPHP = []string{"8.5", "8.4", "8.3", "8.2", "8.1"}
 
 var stableVersion = regexp.MustCompile(`^v?(\d+)\.\d+\.\d+$`)
@@ -39,7 +39,7 @@ func Fetch(ctx context.Context, client *http.Client) ([]Release, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "devstack")
+	req.Header.Set("User-Agent", "stacknest")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err

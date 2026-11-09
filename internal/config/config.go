@@ -1,15 +1,20 @@
-// Package config defines the per-project .devstack.yaml file.
+// Package config defines the per-project .stacknest.yaml file.
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
-const FileName = ".devstack.yaml"
+const FileName = ".stacknest.yaml"
+
+var domainPattern = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)*\.test$`)
 
 type Database struct {
 	Engine  string `yaml:"engine"`
@@ -25,6 +30,7 @@ type OPcache struct {
 
 type Project struct {
 	PHP      string    `yaml:"php"`
+	Domain   string    `yaml:"domain,omitempty"`
 	Database *Database `yaml:"database,omitempty"`
 	Redis    bool      `yaml:"redis"`
 	OPcache  OPcache   `yaml:"opcache"`
@@ -40,12 +46,20 @@ func Default(php string) Project {
 	}
 }
 
+// Name is the identifier derived from the domain.
+func (p Project) Name() string {
+	return strings.ReplaceAll(strings.TrimSuffix(p.Domain, ".test"), ".", "-")
+}
+
 func (p Project) Validate() error {
 	if p.PHP == "" {
-		return fmt.Errorf("php version is required")
+		return errors.New("php version is required")
+	}
+	if p.Domain != "" && !domainPattern.MatchString(p.Domain) {
+		return fmt.Errorf("invalid domain %q (expected something like app.test)", p.Domain)
 	}
 	if p.OPcache.Memory <= 0 {
-		return fmt.Errorf("opcache memory must be positive")
+		return errors.New("opcache memory must be positive")
 	}
 	if p.Database == nil {
 		return nil
@@ -56,7 +70,7 @@ func (p Project) Validate() error {
 		return fmt.Errorf("unknown database engine %q (use mariadb, mysql or postgres)", p.Database.Engine)
 	}
 	if p.Database.Version == "" {
-		return fmt.Errorf("database version is required")
+		return errors.New("database version is required")
 	}
 	return nil
 }
@@ -71,4 +85,39 @@ func (p Project) Write(dir string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, FileName), data, 0o644)
+}
+
+// Load reads a project from dir; missing settings keep their defaults.
+func Load(dir string) (Project, error) {
+	data, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil {
+		return Project{}, err
+	}
+	project := Default("")
+	if err := yaml.Unmarshal(data, &project); err != nil {
+		return Project{}, fmt.Errorf("%s: %w", FileName, err)
+	}
+	if err := project.Validate(); err != nil {
+		return Project{}, fmt.Errorf("%s: %w", FileName, err)
+	}
+	return project, nil
+}
+
+// Find walks up from start and returns the nearest project and its directory.
+func Find(start string) (Project, string, error) {
+	dir := start
+	for {
+		project, err := Load(dir)
+		if err == nil {
+			return project, dir, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return Project{}, "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return Project{}, "", os.ErrNotExist
+		}
+		dir = parent
+	}
 }

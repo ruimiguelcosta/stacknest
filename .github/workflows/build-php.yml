@@ -18,7 +18,7 @@ jobs:
     env:
       GITHUB_TOKEN: ${{ github.token }}
       PHP_VERSION: ${{ matrix.php }}
-      EXTENSIONS: bcmath,bz2,calendar,ctype,curl,dom,exif,fileinfo,filter,gd,iconv,intl,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,pgsql,phar,posix,redis,session,simplexml,sockets,sodium,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib
+      EXTENSIONS: bcmath,bz2,calendar,ctype,curl,dom,exif,fileinfo,filter,ftp,gd,gmp,iconv,imagick,intl,mbregex,mbstring,mysqli,mysqlnd,opcache,openssl,pcntl,pdo,pdo_mysql,pdo_pgsql,pdo_sqlite,pgsql,phar,posix,readline,redis,session,shmop,simplexml,soap,sockets,sodium,sqlite3,sysvmsg,sysvsem,sysvshm,tokenizer,xml,xmlreader,xmlwriter,xsl,zip,zlib
     steps:
       - name: Install spc
         run: |
@@ -47,9 +47,10 @@ jobs:
         run: |
           buildroot/bin/php-fpm -m > modules.txt
           cat modules.txt
-          for module in "Zend OPcache" mysqli pdo_mysql pdo_pgsql pgsql pdo_sqlite redis intl gd sodium zip; do
+          for module in "Zend OPcache" mysqli pdo_mysql pdo_pgsql pgsql pdo_sqlite redis intl gd gmp imagick soap xsl sodium zip; do
             grep -qix "$module" modules.txt || { echo "Missing module: $module"; exit 1; }
           done
+          buildroot/bin/php -r 'exit(function_exists("mb_split") ? 0 : 1);'
           so=$(find buildroot -name xdebug.so -print -quit)
           if [ -n "$so" ] && buildroot/bin/php -n -d "zend_extension=$PWD/$so" -m 2>&1 | tee xdebug.txt | grep -qix xdebug; then
             echo "XDEBUG_SO=$so" >> "$GITHUB_ENV"
