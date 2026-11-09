@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ruimiguelcosta/devstack/internal/config"
-	"github.com/ruimiguelcosta/devstack/internal/laravel"
+	"github.com/ruimiguelcosta/stacknest/internal/config"
+	"github.com/ruimiguelcosta/stacknest/internal/laravel"
 )
 
 const usage = `usage:

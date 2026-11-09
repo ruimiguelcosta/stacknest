@@ -1,4 +1,4 @@
-module github.com/ruimiguelcosta/devstack
+module github.com/ruimiguelcosta/stacknest
 
 go 1.27
 
