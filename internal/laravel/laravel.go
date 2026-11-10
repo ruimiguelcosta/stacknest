@@ -122,9 +122,11 @@ func ChoosePHP(constraint string, candidates []string) (string, error) {
 }
 
 // CreateProjectArgs returns the composer arguments that scaffold a project.
-func CreateProjectArgs(major int, dir string) []string {
-	return []string{
-		"create-project", "--prefer-dist", "--no-interaction",
-		fmt.Sprintf("laravel/laravel:^%d.0", major), dir,
+// Composer refuses releases with known advisories unless allowInsecure is set.
+func CreateProjectArgs(major int, dir string, allowInsecure bool) []string {
+	args := []string{"create-project", "--prefer-dist", "--no-interaction"}
+	if allowInsecure {
+		args = append(args, "--no-blocking")
 	}
+	return append(args, fmt.Sprintf("laravel/laravel:^%d.0", major), dir)
 }

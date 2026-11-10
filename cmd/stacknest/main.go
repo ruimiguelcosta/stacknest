@@ -31,7 +31,7 @@ const usage = `usage:
   stacknest php install ARCHIVE
   stacknest php list
   stacknest laravel versions
-  stacknest new NAME [--laravel MAJOR] [--php VERSION] [--db ENGINE:VERSION] [--redis] [--mail] [--dry-run]
+  stacknest new NAME [--laravel MAJOR] [--php VERSION] [--db ENGINE:VERSION] [--redis] [--mail] [--allow-insecure] [--dry-run]
   stacknest link [--domain NAME.test] [--php VERSION] [DIR]
   stacknest unlink [DIR]
   stacknest list
@@ -199,6 +199,7 @@ func newProject(layout paths.Layout, name string, args []string, stdout, stderr 
 	db := flags.String("db", "", "database as ENGINE:VERSION")
 	redis := flags.Bool("redis", false, "enable Redis")
 	mail := flags.Bool("mail", false, "enable the local mailbox")
+	allowInsecure := flags.Bool("allow-insecure", false, "install even if Composer blocks the release over security advisories")
 	dryRun := flags.Bool("dry-run", false, "show what would happen without creating anything")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -243,7 +244,7 @@ func newProject(layout paths.Layout, name string, args []string, stdout, stderr 
 		return err
 	}
 
-	composerArgs := laravel.CreateProjectArgs(release.Major, name)
+	composerArgs := laravel.CreateProjectArgs(release.Major, name, *allowInsecure)
 	if *dryRun {
 		fmt.Fprintf(stdout, "Laravel %d (%s) with PHP %s at https://%s\ncomposer %s\n", release.Major, release.Version, phpVersion, project.Domain, strings.Join(composerArgs, " "))
 		return nil
@@ -259,7 +260,14 @@ func newProject(layout paths.Layout, name string, args []string, stdout, stderr 
 	composer.Env = append(os.Environ(), "PATH="+layout.PHPBinDir(phpVersion)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	composer.Stdout, composer.Stderr = stdout, stderr
 	if err := composer.Run(); err != nil {
-		return fmt.Errorf("composer create-project: %w", err)
+		// The directory did not exist before this command, so it is safe to remove.
+		if cleanupErr := os.RemoveAll(name); cleanupErr != nil {
+			return fmt.Errorf("composer create-project: %w (cleanup failed: %v)", err, cleanupErr)
+		}
+		return fmt.Errorf("composer create-project: %w (if Composer blocked it over security advisories, review them and use --allow-insecure)", err)
+	}
+	if *allowInsecure {
+		fmt.Fprintln(stderr, "warning: installed without Composer's security blocking; this project may have known vulnerabilities")
 	}
 	if err := project.Write(name); err != nil {
 		return err

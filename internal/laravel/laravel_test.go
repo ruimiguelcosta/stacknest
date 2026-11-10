@@ -55,8 +55,15 @@ func TestChoosePHP(t *testing.T) {
 }
 
 func TestCreateProjectArgsPinsMajor(t *testing.T) {
-	got := strings.Join(CreateProjectArgs(12, "blog"), " ")
-	if !strings.Contains(got, "laravel/laravel:^12.0 blog") {
+	got := strings.Join(CreateProjectArgs(12, "blog", false), " ")
+	if !strings.Contains(got, "laravel/laravel:^12.0 blog") || strings.Contains(got, "--no-blocking") {
+		t.Errorf("unexpected args: %s", got)
+	}
+}
+
+func TestCreateProjectArgsAllowsInsecureOnlyWhenAsked(t *testing.T) {
+	got := strings.Join(CreateProjectArgs(11, "blog", true), " ")
+	if !strings.Contains(got, "--no-blocking") {
 		t.Errorf("unexpected args: %s", got)
 	}
 }
