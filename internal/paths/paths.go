@@ -22,8 +22,9 @@ func Default() (Layout, error) {
 	return Layout{Root: filepath.Join(home, ".stacknest")}, nil
 }
 
-func (l Layout) Runtime(php string) string {
-	return filepath.Join(l.Root, "runtimes", "php", php)
+func (l Layout) Runtime(php string) string { return l.RuntimeDir("php", php) }
+func (l Layout) RuntimeDir(name, series string) string {
+	return filepath.Join(l.Root, "runtimes", name, series)
 }
 func (l Layout) PHPBinDir(php string) string { return filepath.Join(l.Runtime(php), "bin") }
 func (l Layout) PHP(php string) string       { return filepath.Join(l.PHPBinDir(php), "php") }

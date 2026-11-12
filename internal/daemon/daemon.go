@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -41,6 +42,7 @@ type process struct {
 	done        chan struct{}
 	fingerprint string
 	started     time.Time
+	stopSignal  os.Signal
 	stopTimeout time.Duration
 }
 
@@ -155,6 +157,8 @@ func fillProject(state *status.Project, project config.Project) {
 	state.PHP = project.PHP
 	state.Custom = project.Caddy != ""
 	state.OPcache = project.OPcache
+	state.Xdebug = project.Xdebug
+	state.Database = project.Database
 }
 
 // applyWeb loads the web server configuration when it changes. A project
@@ -194,14 +198,24 @@ func (d *Daemon) ensureServices() ([]proxy.Site, []status.Service) {
 	var states []status.Service
 	for _, m := range missing {
 		d.report("service "+m.Name, errors.New(m.Reason))
-		states = append(states, status.Service{Name: m.Name, Error: m.Reason})
+		states = append(states, status.Service{Name: m.Name, Title: m.Title, Error: m.Reason})
+	}
+	wanted := map[string]bool{}
+	for _, service := range available {
+		wanted[service.Name] = true
+	}
+	for name := range d.services {
+		if !wanted[name] {
+			d.stop(d.services, name)
+			delete(d.retry, name)
+		}
 	}
 	var sites []proxy.Site
 	for _, service := range available {
 		key := "service " + service.Name
 		err := d.ensureService(service)
 		d.report(key, err)
-		state := status.Service{Name: service.Name, Port: service.Port, Log: d.logFile(service.Name), Running: err == nil}
+		state := status.Service{Name: service.Name, Title: service.Title, Port: service.Port, Log: d.logFile(service.Name), Running: err == nil}
 		if err != nil {
 			state.Error = err.Error()
 		}
@@ -216,13 +230,20 @@ func (d *Daemon) ensureServices() ([]proxy.Site, []status.Service) {
 }
 
 func (d *Daemon) ensureService(service services.Service) error {
+	fingerprint := service.Binary + "\x00" + strings.Join(service.Args, "\x00")
 	if current := d.services[service.Name]; current != nil {
-		if running(current) {
+		if running(current) && current.fingerprint == fingerprint {
 			return nil
 		}
-		delete(d.services, service.Name)
-		if time.Since(current.started) < minUptime {
-			d.retry[service.Name] = time.Now().Add(retryDelay)
+		if running(current) {
+			// The version or port changed in services.json.
+			d.stop(d.services, service.Name)
+			delete(d.retry, service.Name)
+		} else {
+			delete(d.services, service.Name)
+			if time.Since(current.started) < minUptime {
+				d.retry[service.Name] = time.Now().Add(retryDelay)
+			}
 		}
 	}
 	if until, ok := d.retry[service.Name]; ok && time.Now().Before(until) {
@@ -242,7 +263,7 @@ func (d *Daemon) ensureService(service services.Service) error {
 	}
 	cmd := exec.Command(service.Binary, service.Args...)
 	cmd.Stdout, cmd.Stderr = logFile, logFile
-	started, err := start(cmd, "", service.StopTimeout)
+	started, err := start(cmd, fingerprint, service.StopSignal, service.StopTimeout)
 	_ = logFile.Close()
 	if err != nil {
 		return fmt.Errorf("start %s: %w", service.Name, err)
@@ -280,7 +301,7 @@ func (d *Daemon) ensure(name, dir string) (config.Project, error) {
 
 	cmd := exec.Command(d.layout.PHPFPM(project.PHP), "-c", files.INI, "-y", files.Conf)
 	cmd.Dir = dir
-	started, err := start(cmd, files.Fingerprint, stopTimeout)
+	started, err := start(cmd, files.Fingerprint, syscall.SIGTERM, stopTimeout)
 	if err != nil {
 		return config.Project{}, fmt.Errorf("start php-fpm: %w", err)
 	}
@@ -288,11 +309,11 @@ func (d *Daemon) ensure(name, dir string) (config.Project, error) {
 	return project, nil
 }
 
-func start(cmd *exec.Cmd, fingerprint string, timeout time.Duration) (*process, error) {
+func start(cmd *exec.Cmd, fingerprint string, signal os.Signal, timeout time.Duration) (*process, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	started := &process{cmd: cmd, done: make(chan struct{}), fingerprint: fingerprint, started: time.Now(), stopTimeout: timeout}
+	started := &process{cmd: cmd, done: make(chan struct{}), fingerprint: fingerprint, started: time.Now(), stopSignal: signal, stopTimeout: timeout}
 	go func() {
 		_ = cmd.Wait()
 		close(started.done)
@@ -315,7 +336,7 @@ func (d *Daemon) stop(group map[string]*process, name string) {
 	if current == nil || !running(current) {
 		return
 	}
-	_ = current.cmd.Process.Signal(syscall.SIGTERM)
+	_ = current.cmd.Process.Signal(current.stopSignal)
 	select {
 	case <-current.done:
 	case <-time.After(current.stopTimeout):

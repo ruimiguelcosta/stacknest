@@ -17,6 +17,17 @@ type Files struct {
 	Fingerprint string
 }
 
+// xdebugINI starts a debug session only when the request asks for one
+// (XDEBUG_TRIGGER, or the browser extension's cookie), so pages stay fast.
+func xdebugINI(extension string) string {
+	return fmt.Sprintf(`zend_extension=%s
+xdebug.mode=debug,develop
+xdebug.start_with_request=trigger
+xdebug.client_host=127.0.0.1
+xdebug.client_port=9003
+`, extension)
+}
+
 func INI(opcache config.OPcache) string {
 	jit := "opcache.jit_buffer_size=0"
 	if opcache.JIT {
@@ -69,6 +80,14 @@ func Render(layout paths.Layout, name string, project config.Project) (Files, er
 		Log:  filepath.Join(dir, "php-fpm.log"),
 	}
 	ini := INI(project.OPcache)
+	if project.Xdebug {
+		extension := filepath.Join(layout.Runtime(project.PHP), "lib", "xdebug.so")
+		if _, err := os.Stat(extension); err != nil {
+			return Files{}, fmt.Errorf("Xdebug is not available for PHP %s", project.PHP)
+		}
+		// Xdebug must load before OPcache, so it goes first.
+		ini = xdebugINI(extension) + ini
+	}
 	fpmConf := conf(layout.Socket(name), files.Log)
 	if err := os.WriteFile(files.INI, []byte(ini), 0o644); err != nil {
 		return Files{}, err

@@ -17,8 +17,8 @@ const FileName = ".stacknest.yaml"
 var domainPattern = regexp.MustCompile(`^[a-z0-9-]+(\.[a-z0-9-]+)*\.test$`)
 
 type Database struct {
-	Engine  string `yaml:"engine"`
-	Version string `yaml:"version"`
+	Engine  string `yaml:"engine" json:"engine"`
+	Version string `yaml:"version" json:"version"`
 }
 
 type OPcache struct {
@@ -38,6 +38,8 @@ type Project struct {
 	Redis    bool      `yaml:"redis"`
 	OPcache  OPcache   `yaml:"opcache"`
 	Mail     bool      `yaml:"mail"`
+	// Xdebug loads the debugger in this project's PHP-FPM, triggered per request.
+	Xdebug bool `yaml:"xdebug,omitempty"`
 	// Caddy replaces the default PHP site handling with raw Caddyfile
 	// directives; {stacknest.php} expands to the project's PHP-FPM address.
 	Caddy string `yaml:"caddy,omitempty"`

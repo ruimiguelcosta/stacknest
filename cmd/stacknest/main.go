@@ -20,12 +20,14 @@ import (
 
 	"github.com/ruimiguelcosta/stacknest/internal/config"
 	"github.com/ruimiguelcosta/stacknest/internal/daemon"
+	"github.com/ruimiguelcosta/stacknest/internal/database"
 	"github.com/ruimiguelcosta/stacknest/internal/herd"
 	"github.com/ruimiguelcosta/stacknest/internal/laravel"
 	"github.com/ruimiguelcosta/stacknest/internal/launchd"
 	"github.com/ruimiguelcosta/stacknest/internal/paths"
 	"github.com/ruimiguelcosta/stacknest/internal/registry"
 	"github.com/ruimiguelcosta/stacknest/internal/runtime"
+	"github.com/ruimiguelcosta/stacknest/internal/services"
 )
 
 const usage = `usage:
@@ -34,11 +36,17 @@ const usage = `usage:
   stacknest import-herd [--dry-run]
   stacknest setup
   stacknest php install ARCHIVE
+  stacknest runtime catalog|list|install NAME [SERIES]|remove NAME SERIES
+  stacknest service list|enable NAME [--version V] [--port N]|disable NAME [--version V]
+  stacknest db create [--engine E] [--version V] [--name N] [--env] [DIR]
+  stacknest db list [--engine E] [--version V]
+  stacknest env [--mail] [--cache] [--search] [DIR]
+  stacknest mail receive --url URL [--format raw|postmark|mailgun] --to ADDRESS --subject TEXT --text TEXT
   stacknest restart
   stacknest status
   stacknest php list [--json]
   stacknest laravel versions [--json]
-  stacknest set [--php V] [--domain D] [--aliases A,B] [--opcache=BOOL] [--opcache-memory MB] [--jit=BOOL] [--validate-timestamps=BOOL] [--force] [DIR]
+  stacknest set [--php V] [--domain D] [--aliases A,B] [--opcache=BOOL] [--opcache-memory MB] [--jit=BOOL] [--validate-timestamps=BOOL] [--xdebug=BOOL] [--force] [DIR]
   stacknest cves [--refresh]
   stacknest new NAME [--laravel MAJOR] [--php VERSION] [--db ENGINE:VERSION] [--redis] [--mail] [--allow-insecure] [--dry-run]
   stacknest link [--domain NAME.test] [--php VERSION] [DIR]
@@ -109,6 +117,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cves(layout, args[1:], stdout, stderr)
 	case len(args) == 1 && args[0] == "restart":
 		return launchd.Restart()
+	case len(args) >= 1 && args[0] == "runtime":
+		return runtimeCommand(layout, args[1:], stdout)
+	case len(args) >= 1 && args[0] == "service":
+		return serviceCommand(layout, args[1:], stdout, stderr)
+	case len(args) >= 1 && args[0] == "db":
+		return dbCommand(layout, args[1:], stdout, stderr)
+	case len(args) >= 1 && args[0] == "env":
+		return envCommand(layout, args[1:], stdout, stderr)
+	case len(args) >= 1 && args[0] == "mail":
+		return mailCommand(layout, args[1:], stdout, stderr)
 	case len(args) >= 2 && args[0] == "new":
 		return newProject(layout, args[1], args[2:], stdout, stderr)
 	case len(args) >= 1 && args[0] == "link":
@@ -370,9 +388,9 @@ func newProject(layout paths.Layout, name string, args []string, stdout, stderr 
 	flags.SetOutput(stderr)
 	major := flags.Int("laravel", 0, "Laravel major version (default: latest)")
 	php := flags.String("php", "", "PHP version (default: newest compatible)")
-	db := flags.String("db", "", "database as ENGINE:VERSION")
-	redis := flags.Bool("redis", false, "enable Redis")
-	mail := flags.Bool("mail", false, "enable the local mailbox")
+	db := flags.String("db", "", "create a database on ENGINE[:VERSION] (default: SQLite)")
+	redis := flags.Bool("redis", false, "point Redis at the Valkey server")
+	mail := flags.Bool("mail", true, "send mail to the local mailbox")
 	allowInsecure := flags.Bool("allow-insecure", false, "install even if Composer blocks the release over security advisories")
 	dryRun := flags.Bool("dry-run", false, "show what would happen without creating anything")
 	if err := flags.Parse(args); err != nil {
@@ -407,12 +425,20 @@ func newProject(layout paths.Layout, name string, args []string, stdout, stderr 
 	project.Domain = name + ".test"
 	project.Redis = *redis
 	project.Mail = *mail
+	settings, err := services.Load(layout)
+	if err != nil {
+		return err
+	}
+	var dbInstance services.Instance
 	if *db != "" {
-		engine, version, ok := strings.Cut(*db, ":")
-		if !ok {
-			return fmt.Errorf("invalid --db %q (expected ENGINE:VERSION)", *db)
+		engine, version, _ := strings.Cut(*db, ":")
+		if dbInstance, err = pickInstance(settings, engine, version); err != nil {
+			return err
 		}
-		project.Database = &config.Database{Engine: engine, Version: version}
+		project.Database = &config.Database{Engine: dbInstance.Engine, Version: dbInstance.Version}
+	}
+	if *redis && settings.Cache == nil {
+		return errors.New("Valkey is not enabled (stacknest service enable valkey)")
 	}
 	if err := project.Validate(); err != nil {
 		return err
@@ -452,6 +478,35 @@ func newProject(layout paths.Layout, name string, args []string, stdout, stderr 
 	}
 	if err := registry.Add(layout.Registry(), project.Name(), dir); err != nil {
 		return err
+	}
+
+	// Point the new project's .env at StackNest's services.
+	values := map[string]string{"APP_URL": "https://" + project.Domain}
+	if project.Database != nil {
+		dbName := database.NameFor(project.Name())
+		if err := database.Create(layout, dbInstance, dbName); err != nil {
+			return fmt.Errorf("project created, but the database was not: %w", err)
+		}
+		for key, value := range database.EnvValues(dbInstance, dbName) {
+			values[key] = value
+		}
+	}
+	if *mail {
+		values["MAIL_MAILER"], values["MAIL_HOST"], values["MAIL_PORT"] = "smtp", "127.0.0.1", fmt.Sprint(services.MailSMTPPort)
+	}
+	if *redis {
+		values["REDIS_HOST"], values["REDIS_PORT"] = "127.0.0.1", fmt.Sprint(settings.Cache.Port)
+	}
+	if err := writeDotenv(dir, values, stdout); err != nil {
+		return err
+	}
+	if project.Database != nil {
+		migrate := exec.Command(layout.PHP(phpVersion), "artisan", "migrate", "--force", "--no-interaction")
+		migrate.Dir = dir
+		migrate.Stdout, migrate.Stderr = stdout, stderr
+		if err := migrate.Run(); err != nil {
+			fmt.Fprintf(stderr, "warning: artisan migrate failed: %v\n", err)
+		}
 	}
 	fmt.Fprintf(stdout, "Created https://%s\n", project.Domain)
 	return nil

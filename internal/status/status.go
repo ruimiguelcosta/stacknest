@@ -12,6 +12,7 @@ import (
 
 type Service struct {
 	Name    string `json:"name"`
+	Title   string `json:"title"`
 	Running bool   `json:"running"`
 	Port    int    `json:"port,omitempty"`
 	WebURL  string `json:"web_url,omitempty"`
@@ -30,8 +31,11 @@ type Project struct {
 	Custom  bool           `json:"custom,omitempty"`
 	Running bool           `json:"running"`
 	OPcache config.OPcache `json:"opcache"`
-	Log     string         `json:"log,omitempty"`
-	Error   string         `json:"error,omitempty"`
+	Xdebug  bool           `json:"xdebug,omitempty"`
+	// Database is the server the project's settings name, such as mariadb 11.8.
+	Database *config.Database `json:"database,omitempty"`
+	Log      string           `json:"log,omitempty"`
+	Error    string           `json:"error,omitempty"`
 }
 
 type Status struct {

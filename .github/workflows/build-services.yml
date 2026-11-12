@@ -165,7 +165,11 @@ jobs:
           mkdir -p typesense/bin
           curl -fsSL --retry 5 "https://dl.typesense.org/releases/$TYPESENSE_VERSION/typesense-server-$TYPESENSE_VERSION-darwin-arm64.tar.gz" | tar -xz -C typesense/bin
           sh scripts/relocate-macho.sh typesense
-          typesense/bin/typesense-server --version
+          mkdir -p "$RUNNER_TEMP/ts"
+          typesense/bin/typesense-server --data-dir "$RUNNER_TEMP/ts" --api-key test --api-address 127.0.0.1 --api-port 18108 &
+          for i in $(seq 30); do curl -fsS http://127.0.0.1:18108/health && break; sleep 1; done
+          curl -fsS http://127.0.0.1:18108/health
+          kill %1 || true
           sh scripts/package-runtime.sh typesense "$(echo "$TYPESENSE_VERSION" | cut -d. -f1)" "$TYPESENSE_VERSION" typesense
       - name: MySQL
         run: |

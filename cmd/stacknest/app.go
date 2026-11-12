@@ -3,7 +3,6 @@ package main
 // Commands with machine-readable output, used by the macOS app.
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,16 +13,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/ruimiguelcosta/stacknest/internal/config"
 	"github.com/ruimiguelcosta/stacknest/internal/cve"
+	"github.com/ruimiguelcosta/stacknest/internal/dotenv"
 	"github.com/ruimiguelcosta/stacknest/internal/laravel"
 	"github.com/ruimiguelcosta/stacknest/internal/paths"
 	"github.com/ruimiguelcosta/stacknest/internal/registry"
+	"github.com/ruimiguelcosta/stacknest/internal/runtime"
 	"github.com/ruimiguelcosta/stacknest/internal/services"
 )
 
@@ -136,6 +136,7 @@ func set(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
 	memory := flags.Int("opcache-memory", 0, "OPcache memory in MB")
 	jit := flags.Bool("jit", false, "enable the JIT")
 	timestamps := flags.Bool("validate-timestamps", true, "check files for changes on every request")
+	xdebug := flags.Bool("xdebug", false, "load Xdebug (sessions start on request)")
 	force := flags.Bool("force", false, "change PHP even if composer.lock requires another version")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -184,6 +185,14 @@ func set(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
 	}
 	if given["validate-timestamps"] {
 		project.OPcache.ValidateTimestamps = *timestamps
+	}
+	if given["xdebug"] {
+		if *xdebug {
+			if _, err := os.Stat(filepath.Join(layout.Runtime(project.PHP), "lib", "xdebug.so")); err != nil {
+				return fmt.Errorf("Xdebug is not available for PHP %s", project.PHP)
+			}
+		}
+		project.Xdebug = *xdebug
 	}
 	if err := project.Validate(); err != nil {
 		return err
@@ -234,8 +243,6 @@ func platformProblems(layout paths.Layout, php, dir string) []string {
 	return problems
 }
 
-var mariadbVersion = regexp.MustCompile(`Ver\s+(\d+\.\d+\.\d+)-MariaDB`)
-
 func cves(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("cves", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -254,9 +261,10 @@ func cves(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
 	}
 	sort.Strings(names)
 
+	settings, _ := services.Load(layout)
 	var projects []cve.Project
 	phpUsers := map[string][]string{}
-	var dbUsers []string
+	dbUsers := map[string][]string{}
 	for _, name := range names {
 		dir := registered[name]
 		project, err := config.Load(dir)
@@ -265,8 +273,8 @@ func cves(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
 		}
 		projects = append(projects, cve.Project{Name: name, Domain: project.Domain, Dir: dir})
 		phpUsers[project.PHP] = append(phpUsers[project.PHP], name)
-		if usesMySQL(dir) {
-			dbUsers = append(dbUsers, name)
+		if instance, ok := projectDatabase(settings, project, dir); ok {
+			dbUsers[instance.ID()] = append(dbUsers[instance.ID()], name)
 		}
 	}
 
@@ -278,10 +286,12 @@ func cves(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
 			}
 		}
 	}
-	if server, err := services.MariaDBServer(layout); err == nil {
-		if output, err := exec.Command(server, "--version").Output(); err == nil {
-			if match := mariadbVersion.FindSubmatch(output); match != nil {
-				runtimes = append(runtimes, cve.Runtime{Component: "MariaDB", Product: "mariadb:mariadb", Version: string(match[1]), Projects: dbUsers})
+	products := map[string]string{"mariadb": "mariadb:mariadb", "mysql": "oracle:mysql", "postgres": "postgresql:postgresql"}
+	installed := runtime.List(layout)
+	for _, db := range settings.Databases {
+		for _, r := range installed {
+			if r.Name == db.Engine && r.Series == db.Version && r.Version != "" {
+				runtimes = append(runtimes, cve.Runtime{Component: services.Title(db.Engine), Product: products[db.Engine], Version: r.Version, Projects: dbUsers[db.ID()]})
 			}
 		}
 	}
@@ -296,20 +306,20 @@ func cves(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
 	return printJSON(stdout, report)
 }
 
-// usesMySQL reports whether the project's .env points at a MySQL-compatible database.
-func usesMySQL(dir string) bool {
-	file, err := os.Open(filepath.Join(dir, ".env"))
-	if err != nil {
-		return false
+// projectDatabase finds the server a project uses: its .stacknest.yaml
+// setting, or else the MySQL-compatible server on the port its .env names.
+func projectDatabase(settings services.Settings, project config.Project, dir string) (services.Instance, bool) {
+	if project.Database != nil {
+		return settings.Find(project.Database.Engine, project.Database.Version)
 	}
-	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		key, value, ok := strings.Cut(strings.TrimSpace(scanner.Text()), "=")
-		if ok && key == "DB_CONNECTION" {
-			value = strings.Trim(value, `"'`)
-			return value == "mysql" || value == "mariadb"
+	connection := dotenv.Get(dir, "DB_CONNECTION")
+	port := dotenv.Get(dir, "DB_PORT")
+	for _, db := range settings.Databases {
+		family := db.Engine == "postgres" && connection == "pgsql" ||
+			db.Engine != "postgres" && (connection == "mysql" || connection == "mariadb")
+		if family && (port == "" || port == fmt.Sprint(db.Port)) {
+			return db, true
 		}
 	}
-	return false
+	return services.Instance{}, false
 }
