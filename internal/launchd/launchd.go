@@ -98,6 +98,15 @@ func Stop() error {
 	return fmt.Errorf("%s did not stop in time", Label)
 }
 
+// Restart stops the running daemon; launchd starts it again straight away.
+func Restart() error {
+	output, err := exec.Command("launchctl", "kickstart", "-k", domain()+"/"+Label).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("launchctl kickstart: %w: %s", err, bytes.TrimSpace(output))
+	}
+	return nil
+}
+
 // Uninstall stops the agent and removes its definition.
 func Uninstall() error {
 	_ = Stop()

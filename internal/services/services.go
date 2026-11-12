@@ -59,9 +59,14 @@ func Available(layout paths.Layout) ([]Service, []Missing) {
 	return found, missing
 }
 
+// MariaDBServer returns the path of the mariadbd program.
+func MariaDBServer(layout paths.Layout) (string, error) {
+	return find(layout, "mariadb", MariaDBVersion, "mariadb@"+MariaDBVersion, "mariadbd")
+}
+
 func mariaDB(layout paths.Layout) (Service, error) {
 	service := Service{Name: "mariadb", Port: MariaDBPort, StopTimeout: 2 * time.Minute}
-	server, err := find(layout, "mariadb", MariaDBVersion, "mariadb@"+MariaDBVersion, "mariadbd")
+	server, err := MariaDBServer(layout)
 	if err != nil {
 		return service, err
 	}

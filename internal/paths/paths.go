@@ -40,6 +40,11 @@ func (l Layout) Data(parts ...string) string {
 	return filepath.Join(append([]string{l.Root, "data"}, parts...)...)
 }
 func (l Layout) Executable() string { return filepath.Join(l.Shims(), "stacknest") }
+func (l Layout) Status() string     { return filepath.Join(l.Run(), "status.json") }
+func (l Layout) Cache(name string) string {
+	return filepath.Join(l.Root, "cache", name)
+}
+func (l Layout) FPMLog(name string) string { return filepath.Join(l.Project(name), "php-fpm.log") }
 func (l Layout) RootCA() string {
 	return filepath.Join(l.Caddy(), "pki", "authorities", "local", "root.crt")
 }

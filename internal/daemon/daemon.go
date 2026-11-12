@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/ruimiguelcosta/stacknest/internal/proxy"
 	"github.com/ruimiguelcosta/stacknest/internal/registry"
 	"github.com/ruimiguelcosta/stacknest/internal/services"
+	"github.com/ruimiguelcosta/stacknest/internal/status"
 )
 
 const (
@@ -90,26 +92,46 @@ func (d *Daemon) Run(ctx context.Context) error {
 }
 
 func (d *Daemon) reconcile() {
-	var sites []proxy.Site
-	sites = append(sites, d.ensureServices()...)
+	snapshot := status.Status{Updated: time.Now(), PID: os.Getpid(), HTTPSPort: d.options.HTTPSPort}
+	sites, serviceStates := d.ensureServices()
+	snapshot.Services = serviceStates
 
 	projects, err := registry.Load(d.layout.Registry())
 	d.report("registry", err)
 	active := map[string]bool{}
-	for name, dir := range projects {
+	names := make([]string, 0, len(projects))
+	for name := range projects {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	siteIndex := map[string]int{}
+	for _, name := range names {
+		dir := projects[name]
+		state := status.Project{Name: name, Dir: dir, Log: d.layout.FPMLog(name)}
 		project, err := d.ensure(name, dir)
 		d.report(name, err)
 		if err != nil {
+			state.Error = err.Error()
+			if loaded, loadErr := config.Load(dir); loadErr == nil {
+				fillProject(&state, loaded)
+			}
+			snapshot.Projects = append(snapshot.Projects, state)
 			continue
 		}
 		active[name] = true
 		root := docRoot(dir, project.Root)
+		fillProject(&state, project)
+		state.Root = root
+		state.Static = project.Caddy == "" && isStatic(root)
+		state.Running = true
+		siteIndex[project.Domain] = len(snapshot.Projects)
+		snapshot.Projects = append(snapshot.Projects, state)
 		sites = append(sites, proxy.Site{
 			Domains: project.Domains(),
 			Root:    root,
 			Socket:  d.layout.Socket(name),
 			Custom:  project.Caddy,
-			Static:  project.Caddy == "" && isStatic(root),
+			Static:  state.Static,
 		})
 	}
 	for name := range d.processes {
@@ -117,19 +139,37 @@ func (d *Daemon) reconcile() {
 			d.stop(d.processes, name)
 		}
 	}
-	d.applyWeb(sites)
+	for domain, err := range d.applyWeb(sites) {
+		if i, ok := siteIndex[domain]; ok {
+			snapshot.Projects[i].Running = false
+			snapshot.Projects[i].Error = err
+		}
+	}
+	snapshot.WebError = d.problems["web server"]
+	d.report("status", status.Write(d.layout.Status(), snapshot))
+}
+
+func fillProject(state *status.Project, project config.Project) {
+	state.Domain = project.Domain
+	state.Aliases = project.Aliases
+	state.PHP = project.PHP
+	state.Custom = project.Caddy != ""
+	state.OPcache = project.OPcache
 }
 
 // applyWeb loads the web server configuration when it changes. A project
-// with invalid custom directives is left out so the others keep working.
-func (d *Daemon) applyWeb(sites []proxy.Site) {
+// with invalid custom directives is left out so the others keep working;
+// their errors are returned by main domain.
+func (d *Daemon) applyWeb(sites []proxy.Site) map[string]string {
 	options := proxy.Options{HTTPPort: d.options.HTTPPort, HTTPSPort: d.options.HTTPSPort, Storage: d.layout.Caddy()}
+	rejected := map[string]string{}
 	valid := make([]proxy.Site, 0, len(sites))
 	for _, site := range sites {
 		if site.Custom != "" {
 			err := proxy.Validate(proxy.Caddyfile(options, []proxy.Site{site}))
 			d.report("caddy "+site.Domains[0], err)
 			if err != nil {
+				rejected[site.Domains[0]] = "invalid caddy directives: " + err.Error()
 				continue
 			}
 		}
@@ -137,32 +177,42 @@ func (d *Daemon) applyWeb(sites []proxy.Site) {
 	}
 	caddyfile := proxy.Caddyfile(options, valid)
 	if caddyfile == d.caddyfile {
-		return
+		return rejected
 	}
 	err := proxy.Apply(caddyfile)
 	d.report("web server", err)
 	if err == nil {
 		d.caddyfile = caddyfile
 	}
+	return rejected
 }
 
 // ensureServices keeps every installed service running and returns the web
-// sites they expose.
-func (d *Daemon) ensureServices() []proxy.Site {
+// sites they expose and the state of each one.
+func (d *Daemon) ensureServices() ([]proxy.Site, []status.Service) {
 	available, missing := services.Available(d.layout)
+	var states []status.Service
 	for _, m := range missing {
 		d.report("service "+m.Name, errors.New(m.Reason))
+		states = append(states, status.Service{Name: m.Name, Error: m.Reason})
 	}
 	var sites []proxy.Site
 	for _, service := range available {
 		key := "service " + service.Name
 		err := d.ensureService(service)
 		d.report(key, err)
+		state := status.Service{Name: service.Name, Port: service.Port, Log: d.logFile(service.Name), Running: err == nil}
+		if err != nil {
+			state.Error = err.Error()
+		}
 		if err == nil && service.WebDomain != "" {
 			sites = append(sites, proxy.Site{Domains: []string{service.WebDomain}, Upstream: service.WebUpstream})
+			state.WebURL = "https://" + service.WebDomain
 		}
+		states = append(states, state)
 	}
-	return sites
+	sort.Slice(states, func(i, j int) bool { return states[i].Name < states[j].Name })
+	return sites, states
 }
 
 func (d *Daemon) ensureService(service services.Service) error {

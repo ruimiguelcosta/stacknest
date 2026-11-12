@@ -34,12 +34,16 @@ const usage = `usage:
   stacknest import-herd [--dry-run]
   stacknest setup
   stacknest php install ARCHIVE
-  stacknest php list
-  stacknest laravel versions
+  stacknest restart
+  stacknest status
+  stacknest php list [--json]
+  stacknest laravel versions [--json]
+  stacknest set [--php V] [--domain D] [--aliases A,B] [--opcache=BOOL] [--opcache-memory MB] [--jit=BOOL] [--validate-timestamps=BOOL] [--force] [DIR]
+  stacknest cves [--refresh]
   stacknest new NAME [--laravel MAJOR] [--php VERSION] [--db ENGINE:VERSION] [--redis] [--mail] [--allow-insecure] [--dry-run]
   stacknest link [--domain NAME.test] [--php VERSION] [DIR]
   stacknest unlink [DIR]
-  stacknest list
+  stacknest list [--json]
   stacknest serve [--http-port N] [--https-port N] [--dns-port N]
 `
 
@@ -84,13 +88,27 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintf(stdout, "PHP %s installed\n", version)
 		return nil
+	case len(args) == 3 && args[0] == "php" && args[1] == "list" && args[2] == "--json":
+		return printJSON(stdout, phpVersions(layout))
 	case len(args) == 2 && args[0] == "php" && args[1] == "list":
 		for _, version := range installedPHP(layout) {
 			fmt.Fprintln(stdout, version)
 		}
 		return nil
+	case len(args) == 3 && args[0] == "laravel" && args[1] == "versions" && args[2] == "--json":
+		return laravelVersionsJSON(stdout)
 	case len(args) == 2 && args[0] == "laravel" && args[1] == "versions":
 		return listVersions(stdout)
+	case len(args) == 1 && args[0] == "status":
+		return printStatus(layout, stdout)
+	case len(args) == 2 && args[0] == "list" && args[1] == "--json":
+		return listJSON(layout, stdout)
+	case len(args) >= 1 && args[0] == "set":
+		return set(layout, args[1:], stdout, stderr)
+	case len(args) >= 1 && args[0] == "cves":
+		return cves(layout, args[1:], stdout, stderr)
+	case len(args) == 1 && args[0] == "restart":
+		return launchd.Restart()
 	case len(args) >= 2 && args[0] == "new":
 		return newProject(layout, args[1], args[2:], stdout, stderr)
 	case len(args) >= 1 && args[0] == "link":

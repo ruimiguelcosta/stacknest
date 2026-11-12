@@ -22,10 +22,10 @@ type Database struct {
 }
 
 type OPcache struct {
-	Enabled            bool `yaml:"enabled"`
-	Memory             int  `yaml:"memory"`
-	ValidateTimestamps bool `yaml:"validate_timestamps"`
-	JIT                bool `yaml:"jit"`
+	Enabled            bool `yaml:"enabled" json:"enabled"`
+	Memory             int  `yaml:"memory" json:"memory"`
+	ValidateTimestamps bool `yaml:"validate_timestamps" json:"validate_timestamps"`
+	JIT                bool `yaml:"jit" json:"jit"`
 }
 
 type Project struct {
