@@ -30,11 +30,12 @@ jobs:
         series: ["11.8", "11.4", "10.11"]
     steps:
       - uses: actions/checkout@v4
-      # TLS libraries from Homebrew would be linked into the client; remove them.
+      # OpenSSL is linked statically (the client library cannot use the bundled
+      # WolfSSL); GnuTLS is removed so nothing links to Homebrew at run time.
       - name: Build tools
         run: |
-          brew install cmake ninja bison
-          brew uninstall --ignore-dependencies --force gnutls openssl@3 openssl@1.1 2>/dev/null || true
+          brew install cmake ninja bison openssl@3
+          brew uninstall --ignore-dependencies --force gnutls 2>/dev/null || true
       - name: Download source
         run: |
           version=$(curl -fsSL https://archive.mariadb.org/ | grep -oE "mariadb-${{ matrix.series }}\.[0-9]+/" | sed 's/mariadb-//; s,/,,' | sort -uV | tail -1)
@@ -52,7 +53,8 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/stacknest/mariadb \
             -DCMAKE_IGNORE_PREFIX_PATH="/opt/homebrew;/usr/local" \
             -DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison" \
-            -DWITH_SSL=bundled -DWITH_PCRE=bundled -DWITH_ZLIB=bundled -DWITH_LIBFMT=bundled \
+            -DWITH_SSL=system -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)" -DOPENSSL_USE_STATIC_LIBS=ON \
+            -DWITH_PCRE=bundled -DWITH_ZLIB=bundled -DWITH_LIBFMT=bundled \
             -DWITH_UNIT_TESTS=OFF -DWITH_EMBEDDED_SERVER=OFF -DWITH_WSREP=OFF -DWITH_MARIABACKUP=OFF \
             -DPLUGIN_TOKUDB=NO -DPLUGIN_MROONGA=NO -DPLUGIN_SPIDER=NO -DPLUGIN_OQGRAPH=NO \
             -DPLUGIN_ROCKSDB=NO -DPLUGIN_CONNECT=NO -DPLUGIN_S3=NO -DPLUGIN_COLUMNSTORE=NO \
@@ -106,7 +108,7 @@ jobs:
             --without-icu --with-libedit-preferred --with-uuid=e2fs --disable-nls
           make -j"$(sysctl -n hw.ncpu)" world-bin
           make install-world-bin DESTDIR="$GITHUB_WORKSPACE/stage"
-          rm -rf "$GITHUB_WORKSPACE/stage/stacknest/postgres/include"
+          rm -rf "$GITHUB_WORKSPACE/stage/stacknest/postgres/include" "$GITHUB_WORKSPACE/stage/stacknest/postgres/lib/pgxs/src/test"
       - name: Make relocatable
         run: sh scripts/relocate-macho.sh stage/stacknest/postgres /stacknest/postgres
       - name: Verify
@@ -176,7 +178,7 @@ jobs:
           curl -fsSL --retry 5 "https://github.com/axllent/mailpit/releases/download/$tag/mailpit-darwin-arm64.tar.gz" | tar -xz -C mailpit-src
           cp mailpit-src/mailpit mailpit/bin/
           cp mailpit-src/LICENSE mailpit/ 2>/dev/null || true
-          mailpit/bin/mailpit version
+          mailpit/bin/mailpit --help > /dev/null
           sh scripts/package-runtime.sh mailpit "$(echo "$version" | cut -d. -f1)" "$version" mailpit
       - name: Typesense
         run: |
