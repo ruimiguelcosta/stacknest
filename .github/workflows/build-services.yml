@@ -30,8 +30,11 @@ jobs:
         series: ["11.8", "11.4", "10.11"]
     steps:
       - uses: actions/checkout@v4
+      # TLS libraries from Homebrew would be linked into the client; remove them.
       - name: Build tools
-        run: brew install cmake ninja bison
+        run: |
+          brew install cmake ninja bison
+          brew uninstall --ignore-dependencies --force gnutls openssl@3 openssl@1.1 2>/dev/null || true
       - name: Download source
         run: |
           version=$(curl -fsSL https://archive.mariadb.org/ | grep -oE "mariadb-${{ matrix.series }}\.[0-9]+/" | sed 's/mariadb-//; s,/,,' | sort -uV | tail -1)
@@ -41,8 +44,11 @@ jobs:
       # Everything is bundled or disabled so the result only needs macOS itself.
       - name: Build
         run: |
-          cmake -S src -B build -G Ninja \
+          PKG_CONFIG_PATH= PKG_CONFIG_LIBDIR=/nonexistent cmake -S src -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,-headerpad_max_install_names \
+            -DCMAKE_SHARED_LINKER_FLAGS=-Wl,-headerpad_max_install_names \
+            -DCMAKE_MODULE_LINKER_FLAGS=-Wl,-headerpad_max_install_names \
             -DCMAKE_INSTALL_PREFIX=/stacknest/mariadb \
             -DCMAKE_IGNORE_PREFIX_PATH="/opt/homebrew;/usr/local" \
             -DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison" \
@@ -96,7 +102,7 @@ jobs:
       - name: Build
         working-directory: src
         run: |
-          PATH=/usr/bin:/bin:/usr/sbin:/sbin ./configure --prefix=/stacknest/postgres \
+          PATH=/usr/bin:/bin:/usr/sbin:/sbin LDFLAGS=-Wl,-headerpad_max_install_names ./configure --prefix=/stacknest/postgres \
             --without-icu --with-libedit-preferred --with-uuid=e2fs --disable-nls
           make -j"$(sysctl -n hw.ncpu)" world-bin
           make install-world-bin DESTDIR="$GITHUB_WORKSPACE/stage"

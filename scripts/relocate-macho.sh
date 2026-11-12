@@ -33,9 +33,21 @@ for file in $machos; do
 done
 
 for file in $machos; do
+	dir="$(dirname "$file")"
 	otool -L "$file" | tail -n +2 | awk '{print $1}' | while read -r dep; do
 		case "$dep" in
-		/usr/lib/* | /System/* | @rpath/* | @loader_path/* | @executable_path/*) ;;
+		/usr/lib/* | /System/* | @loader_path/* | @executable_path/*) ;;
+		@rpath/*)
+			# The library must be reachable through one of the file's rpaths.
+			name="${dep#@rpath/}"
+			found=""
+			for rpath in $(otool -l "$file" | awk '/LC_RPATH/ {getline; getline; print $2}'); do
+				candidate="$(echo "$rpath" | sed "s|@loader_path|$dir|; s|@executable_path|$dir|")/$name"
+				[ -e "$candidate" ] && found=1 && break
+			done
+			[ "$(basename "$file")" = "$name" ] && found=1
+			[ -n "$found" ] || echo "unresolved: $file -> $dep"
+			;;
 		*) echo "not self-contained: $file -> $dep" ;;
 		esac
 	done
