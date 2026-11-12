@@ -1,0 +1,53 @@
+name: Publish runtimes
+
+# Builds every runtime and publishes them, with runtimes.json, on the
+# "runtimes" release that the app downloads from.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  php:
+    uses: ./.github/workflows/build-php.yml
+  services:
+    uses: ./.github/workflows/build-services.yml
+
+  publish:
+    needs: [php, services]
+    # Publish whatever built, so one failing runtime does not block the rest.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: runtime-*
+          path: artifacts
+          merge-multiple: true
+      - name: Write the catalog
+        run: |
+          python3 - <<'EOF'
+          import glob, hashlib, json, os, datetime
+          repo = os.environ["GITHUB_REPOSITORY"]
+          runtimes = []
+          for meta in sorted(glob.glob("artifacts/*.meta.json")):
+              entry = json.load(open(meta))
+              path = os.path.join("artifacts", entry["file"])
+              entry["sha256"] = hashlib.sha256(open(path, "rb").read()).hexdigest()
+              entry["size"] = os.path.getsize(path)
+              entry["url"] = f"https://github.com/{repo}/releases/download/runtimes/{entry['file']}"
+              runtimes.append(entry)
+          catalog = {"generated": datetime.datetime.now(datetime.timezone.utc).isoformat(), "runtimes": runtimes}
+          json.dump(catalog, open("artifacts/runtimes.json", "w"), indent=2)
+          print(json.dumps(catalog, indent=2))
+          EOF
+      - name: Publish
+        run: |
+          gh release view runtimes >/dev/null 2>&1 || gh release create runtimes --prerelease \
+            --title "Runtimes" \
+            --notes "PHP, databases and services that StackNest installs. Built by the Publish runtimes workflow; licences and sources: see each project's site."
+          gh release upload runtimes artifacts/*.tar.gz artifacts/runtimes.json --clobber

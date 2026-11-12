@@ -1,0 +1,193 @@
+name: Build service runtimes
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+
+jobs:
+  mariadb:
+    name: MariaDB ${{ matrix.series }}
+    runs-on: macos-15
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        series: ["11.8", "11.4", "10.11"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build tools
+        run: brew install cmake ninja bison
+      - name: Download source
+        run: |
+          version=$(curl -fsSL https://archive.mariadb.org/ | grep -oE "mariadb-${{ matrix.series }}\.[0-9]+/" | sed 's/mariadb-//; s,/,,' | sort -uV | tail -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          curl -fsSL --retry 5 -o src.tar.gz "https://archive.mariadb.org/mariadb-$version/source/mariadb-$version.tar.gz"
+          mkdir src && tar -xzf src.tar.gz -C src --strip-components 1
+      # Everything is bundled or disabled so the result only needs macOS itself.
+      - name: Build
+        run: |
+          cmake -S src -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/stacknest/mariadb \
+            -DCMAKE_IGNORE_PREFIX_PATH="/opt/homebrew;/usr/local" \
+            -DBISON_EXECUTABLE="$(brew --prefix bison)/bin/bison" \
+            -DWITH_SSL=bundled -DWITH_PCRE=bundled -DWITH_ZLIB=bundled -DWITH_LIBFMT=bundled \
+            -DWITH_UNIT_TESTS=OFF -DWITH_EMBEDDED_SERVER=OFF -DWITH_WSREP=OFF -DWITH_MARIABACKUP=OFF \
+            -DPLUGIN_TOKUDB=NO -DPLUGIN_MROONGA=NO -DPLUGIN_SPIDER=NO -DPLUGIN_OQGRAPH=NO \
+            -DPLUGIN_ROCKSDB=NO -DPLUGIN_CONNECT=NO -DPLUGIN_S3=NO -DPLUGIN_COLUMNSTORE=NO \
+            -DPLUGIN_AUTH_GSSAPI=NO -DPLUGIN_AUTH_PAM=NO -DPLUGIN_AUTH_PAM_V1=NO \
+            -DPLUGIN_PROVIDER_LZ4=NO -DPLUGIN_PROVIDER_LZO=NO -DPLUGIN_PROVIDER_SNAPPY=NO \
+            -DPLUGIN_PROVIDER_ZSTD=NO -DPLUGIN_PROVIDER_BZIP2=NO -DPLUGIN_PROVIDER_LZMA=NO \
+            -DPLUGIN_HASHICORP_KEY_MANAGEMENT=NO -DCONNECT_WITH_MONGO=OFF
+          cmake --build build
+          DESTDIR="$PWD/stage" cmake --install build
+          rm -rf stage/stacknest/mariadb/{mysql-test,sql-bench,include,man,docs,support-files}
+      - name: Make relocatable
+        run: sh scripts/relocate-macho.sh stage/stacknest/mariadb /stacknest/mariadb
+      - name: Verify
+        run: |
+          base="$PWD/stage/stacknest/mariadb"
+          install_db=$(ls "$base"/scripts/mariadb-install-db "$base"/bin/mariadb-install-db 2>/dev/null | head -1)
+          "$install_db" --no-defaults --basedir="$base" --datadir="$RUNNER_TEMP/data" --auth-root-authentication-method=normal --skip-test-db
+          "$base/bin/mariadbd" --no-defaults --basedir="$base" --datadir="$RUNNER_TEMP/data" --port=3399 --bind-address=127.0.0.1 --socket="$RUNNER_TEMP/m.sock" &
+          for i in $(seq 30); do "$base/bin/mariadb" -uroot -h127.0.0.1 -P3399 -e 'select version()' && break; sleep 1; done
+          "$base/bin/mariadb" -uroot -h127.0.0.1 -P3399 -e 'create database t; create table t.x (id int); select @@version'
+          "$base/bin/mariadb-admin" -uroot -h127.0.0.1 -P3399 shutdown
+      - name: Package
+        run: sh scripts/package-runtime.sh mariadb "${{ matrix.series }}" "$VERSION" stage/stacknest/mariadb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-mariadb-${{ matrix.series }}
+          path: dist/*
+          if-no-files-found: error
+
+  postgres:
+    name: PostgreSQL ${{ matrix.major }}
+    runs-on: macos-15
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        major: ["18", "17", "16"]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download source
+        run: |
+          version=$(curl -fsSL https://ftp.postgresql.org/pub/source/ | grep -oE "v${{ matrix.major }}\.[0-9]+/" | sed 's/v//; s,/,,' | sort -uV | tail -1)
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          curl -fsSL --retry 5 -o src.tar.bz2 "https://ftp.postgresql.org/pub/source/v$version/postgresql-$version.tar.bz2"
+          mkdir src && tar -xjf src.tar.bz2 -C src --strip-components 1
+      - name: Build
+        working-directory: src
+        run: |
+          PATH=/usr/bin:/bin:/usr/sbin:/sbin ./configure --prefix=/stacknest/postgres \
+            --without-icu --with-libedit-preferred --with-uuid=e2fs --disable-nls
+          make -j"$(sysctl -n hw.ncpu)" world-bin
+          make install-world-bin DESTDIR="$GITHUB_WORKSPACE/stage"
+          rm -rf "$GITHUB_WORKSPACE/stage/stacknest/postgres/include"
+      - name: Make relocatable
+        run: sh scripts/relocate-macho.sh stage/stacknest/postgres /stacknest/postgres
+      - name: Verify
+        run: |
+          base="$PWD/stage/stacknest/postgres"
+          "$base/bin/initdb" -D "$RUNNER_TEMP/pg" -U postgres --auth=trust -E UTF8
+          "$base/bin/pg_ctl" -D "$RUNNER_TEMP/pg" -o "-p 54399 -k $RUNNER_TEMP -h 127.0.0.1" -w start
+          "$base/bin/psql" -h 127.0.0.1 -p 54399 -U postgres -c 'create extension pg_trgm; select version()'
+          "$base/bin/pg_ctl" -D "$RUNNER_TEMP/pg" -w stop
+      - name: Package
+        run: sh scripts/package-runtime.sh postgres "${{ matrix.major }}" "$VERSION" stage/stacknest/postgres
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-postgres-${{ matrix.major }}
+          path: dist/*
+          if-no-files-found: error
+
+  valkey:
+    name: Valkey
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          tag=$(gh api repos/valkey-io/valkey/releases/latest --jq .tag_name)
+          version=${tag#v}
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "SERIES=$(echo "$version" | cut -d. -f1-2)" >> "$GITHUB_ENV"
+          curl -fsSL --retry 5 -o src.tar.gz "https://github.com/valkey-io/valkey/archive/refs/tags/$tag.tar.gz"
+          mkdir src && tar -xzf src.tar.gz -C src --strip-components 1
+          PATH=/usr/bin:/bin:/usr/sbin:/sbin make -C src -j"$(sysctl -n hw.ncpu)" BUILD_TLS=no
+          mkdir -p stage/bin
+          cp src/src/valkey-server src/src/valkey-cli stage/bin/
+          cp src/COPYING stage/LICENSE
+      - name: Make relocatable
+        run: sh scripts/relocate-macho.sh stage
+      - name: Verify
+        run: |
+          stage/bin/valkey-server --port 63999 --bind 127.0.0.1 --save "" &
+          for i in $(seq 20); do stage/bin/valkey-cli -p 63999 ping && break; sleep 1; done
+          stage/bin/valkey-cli -p 63999 shutdown nosave || true
+      - name: Package
+        run: sh scripts/package-runtime.sh valkey "$SERIES" "$VERSION" stage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-valkey
+          path: dist/*
+          if-no-files-found: error
+
+  upstream:
+    name: Upstream binaries
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      TYPESENSE_VERSION: "30.2"
+      MYSQL_SERIES: "8.4"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mailpit
+        run: |
+          tag=$(gh api repos/axllent/mailpit/releases/latest --jq .tag_name)
+          version=${tag#v}
+          mkdir -p mailpit/bin mailpit-src
+          curl -fsSL --retry 5 "https://github.com/axllent/mailpit/releases/download/$tag/mailpit-darwin-arm64.tar.gz" | tar -xz -C mailpit-src
+          cp mailpit-src/mailpit mailpit/bin/
+          cp mailpit-src/LICENSE mailpit/ 2>/dev/null || true
+          mailpit/bin/mailpit version
+          sh scripts/package-runtime.sh mailpit "$(echo "$version" | cut -d. -f1)" "$version" mailpit
+      - name: Typesense
+        run: |
+          mkdir -p typesense/bin
+          curl -fsSL --retry 5 "https://dl.typesense.org/releases/$TYPESENSE_VERSION/typesense-server-$TYPESENSE_VERSION-darwin-arm64.tar.gz" | tar -xz -C typesense/bin
+          sh scripts/relocate-macho.sh typesense
+          typesense/bin/typesense-server --version
+          sh scripts/package-runtime.sh typesense "$(echo "$TYPESENSE_VERSION" | cut -d. -f1)" "$TYPESENSE_VERSION" typesense
+      - name: MySQL
+        run: |
+          url=""
+          for n in $(seq 40 -1 0); do
+            for os in macos15 macos14; do
+              candidate="https://cdn.mysql.com/Downloads/MySQL-$MYSQL_SERIES/mysql-$MYSQL_SERIES.$n-$os-arm64.tar.gz"
+              if curl -fsI "$candidate" >/dev/null 2>&1; then url=$candidate; version=$MYSQL_SERIES.$n; break 2; fi
+            done
+          done
+          [ -n "$url" ] || { echo "MySQL $MYSQL_SERIES not found"; exit 1; }
+          mkdir mysql
+          curl -fsSL --retry 5 "$url" | tar -xz -C mysql --strip-components 1
+          rm -rf mysql/{include,man,docs,mysql-test} mysql/lib/*.a mysql/bin/*debug* mysql/lib/plugin/debug
+          base="$PWD/mysql"
+          "$base/bin/mysqld" --no-defaults --initialize-insecure --basedir="$base" --datadir="$RUNNER_TEMP/my"
+          "$base/bin/mysqld" --no-defaults --basedir="$base" --datadir="$RUNNER_TEMP/my" --port=3398 --bind-address=127.0.0.1 --mysqlx=OFF --socket="$RUNNER_TEMP/my.sock" &
+          for i in $(seq 40); do "$base/bin/mysql" -uroot -h127.0.0.1 -P3398 -e 'select version()' && break; sleep 1; done
+          "$base/bin/mysqladmin" -uroot -h127.0.0.1 -P3398 shutdown
+          sh scripts/package-runtime.sh mysql "$MYSQL_SERIES" "$version" mysql
+      - uses: actions/upload-artifact@v4
+        with:
+          name: runtime-upstream
+          path: dist/*
+          if-no-files-found: error
