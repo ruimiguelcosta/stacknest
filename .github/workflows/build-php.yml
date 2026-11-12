@@ -38,9 +38,11 @@ jobs:
           exit 1
 
       # A shared Xdebug resolves PHP's own functions at load time, so the PHP
-      # binaries must export their symbols (-export_dynamic) and keep them (--no-strip).
+      # binaries must keep every function: no -dead_strip (spc's macOS default),
+      # exported symbols (-export_dynamic) and no full strip (--no-strip).
       - name: Build PHP
         env:
+          SPC_DEFAULT_LDFLAGS: -Wl,-headerpad_max_install_names
           SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS_PROGRAM: -Wl,-export_dynamic
         run: >
           ./spc build:php "$EXTENSIONS"
