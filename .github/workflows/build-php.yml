@@ -37,8 +37,11 @@ jobs:
           done
           exit 1
 
-      # --no-strip keeps the exported symbols that a shared Xdebug needs to load.
+      # A shared Xdebug resolves PHP's own functions at load time, so the PHP
+      # binaries must export their symbols (-export_dynamic) and keep them (--no-strip).
       - name: Build PHP
+        env:
+          SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS_PROGRAM: -Wl,-export_dynamic
         run: >
           ./spc build:php "$EXTENSIONS"
           --build-cli --build-fpm --build-shared=xdebug
