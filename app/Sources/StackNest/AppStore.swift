@@ -19,6 +19,15 @@ final class AppStore {
     var busy = false
     var alert: String?
 
+    // Runtimes and services
+    var catalog: [CatalogEntry] = []
+    var catalogError: String?
+    var installed: [InstalledRuntime] = []
+    var settings: ServiceSettings?
+    /// Download progress (0...1) by runtime id while an install runs.
+    var progress: [String: Double] = [:]
+    var appUpdate: (version: String, url: URL)?
+
     private var timer: Timer?
 
     var projects: [ProjectState] { status?.projects ?? [] }
@@ -32,8 +41,10 @@ final class AppStore {
         }
         engineUpdateAvailable = CLI.updateAvailable
         Task {
+            await loadRuntimes()
             await loadPHPVersions()
             await checkSystem()
+            await checkForAppUpdate()
             await loadCVEs(refresh: false)
         }
     }

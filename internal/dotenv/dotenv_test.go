@@ -12,7 +12,8 @@ func TestSetReplacesEnablesAppendsAndBacksUp(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte(original), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	backup, err := Set(dir, map[string]string{
+	backups := t.TempDir()
+	backup, err := Set(dir, backups, map[string]string{
 		"DB_CONNECTION": "mariadb", "DB_HOST": "127.0.0.1", "DB_PORT": "3307", "DB_DATABASE": "shop", "APP_NAME": "My Shop",
 	})
 	if err != nil {
@@ -32,7 +33,14 @@ func TestSetReplacesEnablesAppendsAndBacksUp(t *testing.T) {
 	if Get(dir, "APP_NAME") != "My Shop" {
 		t.Errorf("Get = %q", Get(dir, "APP_NAME"))
 	}
-	if again, _ := Set(dir, map[string]string{"DB_PORT": "3307"}); again != "" {
+	if again, _ := Set(dir, backups, map[string]string{"DB_PORT": "3307"}); again != "" {
 		t.Error("an unchanged file was backed up again")
+	}
+	second, err := Set(dir, backups, map[string]string{"DB_PORT": "3308"})
+	if err != nil || second == backup {
+		t.Fatalf("a second change in the same second reused the backup name: %s %v", second, err)
+	}
+	if saved, _ := os.ReadFile(backup); string(saved) != original {
+		t.Error("the first backup was overwritten")
 	}
 }

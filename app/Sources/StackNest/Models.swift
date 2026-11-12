@@ -12,18 +12,16 @@ struct OPcache: Codable, Equatable {
 struct ServiceState: Codable, Identifiable {
     var id: String { name }
     let name: String
+    let title: String?
     let running: Bool
     let port: Int?
     let web_url: String?
     let log: String?
     let error: String?
 
-    var title: String {
-        switch name {
-        case "mariadb": return "MariaDB"
-        case "mailpit": return "Mailpit (email local)"
-        default: return name.capitalized
-        }
+    var displayTitle: String {
+        if name == "mailpit" { return "Mailpit (email local)" }
+        return title ?? name
     }
 }
 
@@ -39,6 +37,8 @@ struct ProjectState: Codable, Identifiable, Hashable {
     let custom: Bool?
     let running: Bool
     let opcache: OPcache
+    let xdebug: Bool?
+    let database: ProjectDatabase?
     let log: String?
     let error: String?
 
@@ -47,6 +47,11 @@ struct ProjectState: Codable, Identifiable, Hashable {
 
     static func == (a: ProjectState, b: ProjectState) -> Bool { a.name == b.name }
     func hash(into hasher: inout Hasher) { hasher.combine(name) }
+}
+
+struct ProjectDatabase: Codable, Hashable {
+    let engine: String
+    let version: String
 }
 
 struct DaemonStatus: Codable {
@@ -156,4 +161,70 @@ extension JSONDecoder {
         }
         return decoder
     }()
+}
+
+// MARK: - Runtimes and services
+
+struct CatalogEntry: Codable, Identifiable, Hashable {
+    var id: String { name + "-" + series }
+    let name: String
+    let series: String
+    let version: String
+    let size: Int64?
+}
+
+struct RuntimeCatalog: Codable {
+    let generated: Date?
+    let runtimes: [CatalogEntry]
+}
+
+struct InstalledRuntime: Codable, Identifiable, Hashable {
+    var id: String { name + "-" + series }
+    let name: String
+    let series: String
+    let version: String
+}
+
+struct ServiceInstance: Codable, Identifiable, Hashable {
+    var id: String { engine + "-" + version }
+    let engine: String
+    let version: String
+    let port: Int
+    let api_key: String?
+
+    var title: String { Runtimes.title(engine) + " " + version }
+}
+
+struct ServiceSettings: Codable {
+    let databases: [ServiceInstance]?
+    let cache: ServiceInstance?
+    let search: ServiceInstance?
+    let mail: Bool
+}
+
+enum Runtimes {
+    static let order = ["php", "mariadb", "mysql", "postgres", "valkey", "mailpit", "typesense"]
+    static let databaseEngines = ["mariadb", "mysql", "postgres"]
+
+    static func title(_ name: String) -> String {
+        switch name {
+        case "php": return "PHP"
+        case "mariadb": return "MariaDB"
+        case "mysql": return "MySQL"
+        case "postgres": return "PostgreSQL"
+        case "valkey": return "Valkey (compatível com Redis)"
+        case "mailpit": return "Mailpit (email local)"
+        case "typesense": return "Typesense (pesquisa)"
+        default: return name
+        }
+    }
+
+    static func shortTitle(_ name: String) -> String {
+        switch name {
+        case "valkey": return "Valkey"
+        case "mailpit": return "Mailpit"
+        case "typesense": return "Typesense"
+        default: return title(name)
+        }
+    }
 }

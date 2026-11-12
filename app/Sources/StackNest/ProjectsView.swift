@@ -90,6 +90,11 @@ struct ProjectDetailView: View {
     @State private var needsForce = false
     @State private var confirmUnlink = false
     @State private var saved = false
+    @State private var xdebug = false
+    @State private var dbInstance: ServiceInstance?
+    @State private var dbName = ""
+    @State private var servicesMessage: (ok: Bool, text: String)?
+    @State private var receivingMail = false
 
     private let memoryOptions = [64, 128, 256, 512, 1024]
 
@@ -156,6 +161,18 @@ struct ProjectDetailView: View {
             }
 
             Section {
+                Toggle("Xdebug", isOn: $xdebug)
+                    .disabled(!store.xdebugAvailable(php: php) && !xdebug)
+            } header: {
+                Text("Depuração")
+            } footer: {
+                Text(store.xdebugAvailable(php: php)
+                     ? "Liga-se só nos pedidos que o pedem (extensão do browser ou XDEBUG_TRIGGER), na porta 9003, por isso não torna o site mais lento."
+                     : "Esta versão de PHP ainda não inclui o Xdebug.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
                 HStack {
                     if let error {
                         Text(error).foregroundStyle(.red).font(.callout).textSelection(.enabled)
@@ -169,6 +186,48 @@ struct ProjectDetailView: View {
                     Button("Guardar") { Task { await save(force: false) } }
                         .disabled(store.busy || arguments(force: false).isEmpty)
                 }
+            }
+
+            Section {
+                if let current = project.database {
+                    LabeledContent("Servidor atual", value: "\(Runtimes.title(current.engine)) \(current.version)")
+                }
+                if store.databaseInstances.isEmpty {
+                    Text("Não há servidores de base de dados. Adiciona um em Serviços.").foregroundStyle(.secondary)
+                } else {
+                    Picker("Servidor", selection: $dbInstance) {
+                        ForEach(store.databaseInstances) { Text("\($0.title) · porta \($0.port)").tag(Optional($0)) }
+                    }
+                    TextField("Nome da base de dados", text: $dbName)
+                    HStack {
+                        Spacer()
+                        Button("Criar e ligar no .env") {
+                            Task {
+                                guard let instance = dbInstance else { return }
+                                let result = await store.createDatabase(for: project, instance: instance, name: dbName, writeEnv: true)
+                                servicesMessage = (result.ok, result.message)
+                            }
+                        }
+                        .disabled(dbInstance == nil || store.busy)
+                    }
+                }
+                HStack {
+                    Button("Email para a caixa local") { Task { await env(mail: true) } }
+                    Button("Redis → Valkey") { Task { await env(cache: true) } }
+                        .disabled(store.settings?.cache == nil)
+                    Button("Scout → Typesense") { Task { await env(search: true) } }
+                        .disabled(store.settings?.search == nil)
+                    Spacer()
+                    Button("Simular email recebido…") { receivingMail = true }
+                }
+                if let message = servicesMessage {
+                    Text(message.text).font(.callout).foregroundStyle(message.ok ? Color.green : Color.red).textSelection(.enabled)
+                }
+            } header: {
+                Text("Serviços do projeto")
+            } footer: {
+                Text("O StackNest guarda uma cópia do .env em ~/.stacknest/backups antes de o alterar.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             let findings = store.findings(for: project)
@@ -191,6 +250,7 @@ struct ProjectDetailView: View {
         }
         .formStyle(.grouped)
         .onAppear(perform: load)
+        .sheet(isPresented: $receivingMail) { InboundMailSheet(project: project) }
         .confirmationDialog("Deixar de servir \(project.displayName)?", isPresented: $confirmUnlink) {
             Button("Deixar de servir", role: .destructive) { Task { await store.unlink(project) } }
         }
@@ -201,6 +261,16 @@ struct ProjectDetailView: View {
         domain = project.domain ?? ""
         aliases = (project.aliases ?? []).joined(separator: ", ")
         opcache = project.opcache
+        xdebug = project.xdebug ?? false
+        dbName = project.name.replacingOccurrences(of: "-", with: "_")
+        let current = project.database
+        dbInstance = store.databaseInstances.first { $0.engine == current?.engine && $0.version == current?.version }
+            ?? store.databaseInstances.first
+    }
+
+    private func env(mail: Bool = false, cache: Bool = false, search: Bool = false) async {
+        let result = await store.applyEnv(to: project, mail: mail, cache: cache, search: search)
+        servicesMessage = (result.ok, result.message)
     }
 
     private func arguments(force: Bool) -> [String] {
@@ -213,6 +283,7 @@ struct ProjectDetailView: View {
         if opcache.memory != project.opcache.memory { args += ["--opcache-memory", String(opcache.memory)] }
         if opcache.validate_timestamps != project.opcache.validate_timestamps { args.append("--validate-timestamps=\(opcache.validate_timestamps)") }
         if opcache.jit != project.opcache.jit { args.append("--jit=\(opcache.jit)") }
+        if xdebug != (project.xdebug ?? false) { args.append("--xdebug=\(xdebug)") }
         if force && !args.isEmpty { args.append("--force") }
         return args
     }
@@ -268,6 +339,63 @@ struct LinkSheet: View {
             let base = folder.lastPathComponent.lowercased()
                 .replacingOccurrences(of: "[^a-z0-9.-]", with: "-", options: .regularExpression)
             domain = base + ".test"
+        }
+    }
+}
+
+/// Posts a made-up email to a project, as an inbound mail service would.
+struct InboundMailSheet: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let project: ProjectState
+
+    @AppStorage("inboundFormat") private var format = "postmark"
+    @State private var url = ""
+    @State private var from = "cliente@example.test"
+    @State private var to = ""
+    @State private var subject = "Pedido de informação"
+    @State private var text = "Olá, gostaria de saber mais sobre os vossos serviços."
+    @State private var result: (ok: Bool, text: String)?
+    @State private var sending = false
+
+    var body: some View {
+        Form {
+            Text("Simular email recebido em \(project.displayName)").font(.headline)
+            TextField("Endereço do webhook", text: $url, prompt: Text("https://app.test/inbound"))
+            Picker("Formato", selection: $format) {
+                Text("Postmark (JSON)").tag("postmark")
+                Text("Mailgun (formulário)").tag("mailgun")
+                Text("Email em bruto (MIME)").tag("raw")
+            }
+            TextField("De", text: $from)
+            TextField("Para", text: $to)
+            TextField("Assunto", text: $subject)
+            TextField("Mensagem", text: $text, axis: .vertical).lineLimit(4...8)
+            if let result {
+                Text(result.text).font(.caption.monospaced()).foregroundStyle(result.ok ? Color.green : Color.red)
+                    .textSelection(.enabled).lineLimit(8)
+            }
+            HStack {
+                Spacer()
+                Button("Fechar") { dismiss() }
+                Button("Enviar") {
+                    Task {
+                        sending = true
+                        let reply = await store.receiveMail(url: url, format: format, from: from, to: to, subject: subject, text: text)
+                        result = (reply.ok, reply.message)
+                        sending = false
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(url.isEmpty || to.isEmpty || sending)
+            }
+        }
+        .formStyle(.grouped)
+        .frame(width: 520)
+        .onAppear {
+            let domain = project.domain ?? "app.test"
+            if url.isEmpty { url = "https://\(domain)/" }
+            if to.isEmpty { to = "suporte@\(domain)" }
         }
     }
 }

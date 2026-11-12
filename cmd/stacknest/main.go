@@ -497,7 +497,7 @@ func newProject(layout paths.Layout, name string, args []string, stdout, stderr 
 	if *redis {
 		values["REDIS_HOST"], values["REDIS_PORT"] = "127.0.0.1", fmt.Sprint(settings.Cache.Port)
 	}
-	if err := writeDotenv(dir, values, stdout); err != nil {
+	if err := writeDotenv(layout, dir, values, stdout); err != nil {
 		return err
 	}
 	if project.Database != nil {

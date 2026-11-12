@@ -1,0 +1,67 @@
+name: Release app
+
+# Push a tag such as v0.2.0 to publish StackNest-0.2.0.dmg.
+# Signing and notarization run when these secrets exist:
+#   MACOS_CERTIFICATE (base64 .p12 with the "Developer ID Application" certificate)
+#   MACOS_CERTIFICATE_PASSWORD, MACOS_SIGN_IDENTITY
+#   APPLE_ID, APPLE_TEAM_ID, APPLE_APP_PASSWORD (app-specific password for notarytool)
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go test ./...
+
+      - name: Import signing certificate
+        if: ${{ env.MACOS_CERTIFICATE != '' }}
+        env:
+          PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p ci "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p ci "$keychain"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" -P "$PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci "$keychain"
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          echo "SIGN_IDENTITY=${{ secrets.MACOS_SIGN_IDENTITY }}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: MAKE_DMG=1 app/scripts/build-app.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Notarize
+        if: ${{ env.MACOS_CERTIFICATE != '' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          dmg="dist/StackNest-${GITHUB_REF_NAME#v}.dmg"
+          xcrun notarytool submit "$dmg" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait
+          xcrun stapler staple "$dmg"
+
+      - name: Publish
+        run: |
+          dmg="dist/StackNest-${GITHUB_REF_NAME#v}.dmg"
+          if [ -n "$MACOS_CERTIFICATE" ]; then
+            notes="Abre o .dmg e arrasta o StackNest para Aplicações."
+          else
+            notes="Esta versão não está assinada pela Apple: na primeira abertura, vai a Definições do Sistema › Privacidade e segurança e escolhe Abrir mesmo assim."
+          fi
+          gh release create "$GITHUB_REF_NAME" "$dmg" --title "StackNest ${GITHUB_REF_NAME#v}" --notes "$notes"

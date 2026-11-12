@@ -250,7 +250,7 @@ func dbCommand(layout paths.Layout, args []string, stdout, stderr io.Writer) err
 	if instance.Engine == "mariadb" && laravelMajor(dir) > 0 && laravelMajor(dir) < 11 {
 		values["DB_CONNECTION"] = "mysql" // the mariadb driver arrived in Laravel 11
 	}
-	if err := writeDotenv(dir, values, stdout); err != nil {
+	if err := writeDotenv(layout, dir, values, stdout); err != nil {
 		return err
 	}
 	project.Database = &config.Database{Engine: instance.Engine, Version: instance.Version}
@@ -293,13 +293,14 @@ func laravelMajor(dir string) int {
 	return 0
 }
 
-func writeDotenv(dir string, values map[string]string, stdout io.Writer) error {
-	backup, err := dotenv.Set(dir, values)
+func writeDotenv(layout paths.Layout, dir string, values map[string]string, stdout io.Writer) error {
+	backups := filepath.Join(layout.Root, "backups", filepath.Base(dir))
+	backup, err := dotenv.Set(dir, backups, values)
 	if err != nil {
 		return err
 	}
 	if backup != "" {
-		fmt.Fprintf(stdout, ".env updated (previous version saved as %s)\n", filepath.Base(backup))
+		fmt.Fprintf(stdout, ".env updated (previous version saved in %s)\n", backup)
 	}
 	return nil
 }
@@ -344,7 +345,7 @@ func envCommand(layout paths.Layout, args []string, stdout, stderr io.Writer) er
 	if len(values) == 0 {
 		return errors.New("choose at least one of --mail, --cache or --search")
 	}
-	return writeDotenv(dir, values, stdout)
+	return writeDotenv(layout, dir, values, stdout)
 }
 
 // mailCommand: mail receive --url URL [--format raw|postmark|mailgun] --from F --to T --subject S --text T [--html H]

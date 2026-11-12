@@ -13,10 +13,10 @@ import (
 
 // Set writes the values into dir/.env. An existing key keeps its place, a
 // commented-out key (as in Laravel's default "# DB_HOST=...") is enabled in
-// place, and other keys are appended. The previous file is copied to
-// .env.stacknest-backup-TIMESTAMP first. It returns the backup path, or ""
-// when nothing changed.
-func Set(dir string, values map[string]string) (string, error) {
+// place, and other keys are appended. The previous file is first copied into
+// backupDir, outside the project so it cannot be committed by mistake. It
+// returns the backup path, or "" when nothing changed.
+func Set(dir, backupDir string, values map[string]string) (string, error) {
 	path := filepath.Join(dir, ".env")
 	original, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
@@ -51,8 +51,7 @@ func Set(dir string, values map[string]string) (string, error) {
 
 	backup := ""
 	if len(original) > 0 {
-		backup = filepath.Join(dir, ".env.stacknest-backup-"+time.Now().Format("20060102-150405"))
-		if err := os.WriteFile(backup, original, 0o600); err != nil {
+		if backup, err = writeBackup(backupDir, original); err != nil {
 			return "", fmt.Errorf("back up .env: %w", err)
 		}
 	}
@@ -61,6 +60,33 @@ func Set(dir string, values map[string]string) (string, error) {
 		mode = info.Mode().Perm()
 	}
 	return backup, os.WriteFile(path, []byte(updated), mode)
+}
+
+// writeBackup saves a copy under a name no earlier backup uses.
+func writeBackup(backupDir string, content []byte) (string, error) {
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
+		return "", err
+	}
+	stamp := time.Now().Format("20060102-150405")
+	for n := 0; ; n++ {
+		name := "env-" + stamp
+		if n > 0 {
+			name += fmt.Sprintf("-%d", n)
+		}
+		path := filepath.Join(backupDir, name)
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, err = file.Write(content)
+		if closeErr := file.Close(); err == nil {
+			err = closeErr
+		}
+		return path, err
+	}
 }
 
 // Get returns a key's value from dir/.env, without quotes.

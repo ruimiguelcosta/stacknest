@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -297,8 +298,9 @@ func Runtime(layout paths.Layout, engine, version string) (string, error) {
 	if version == "" {
 		series, _ := os.ReadDir(filepath.Join(layout.Root, "runtimes", engine))
 		for i := len(series) - 1; i >= 0; i-- {
-			if series[i].IsDir() && series[i].Name()[0] != '.' {
-				version = series[i].Name()
+			name := series[i].Name()
+			if info, err := os.Stat(layout.RuntimeDir(engine, name)); err == nil && info.IsDir() && name[0] != '.' && !strings.HasSuffix(name, ".old") {
+				version = name
 				break
 			}
 		}

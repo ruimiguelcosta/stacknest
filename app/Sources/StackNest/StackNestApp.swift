@@ -28,7 +28,7 @@ struct StackNestApp: App {
 }
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case home, projects, services, newProject
+    case home, projects, services, runtimes, newProject
     var id: String { rawValue }
 
     var title: String {
@@ -36,6 +36,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .home: return "Início"
         case .projects: return "Projetos"
         case .services: return "Serviços"
+        case .runtimes: return "Versões"
         case .newProject: return "Novo projeto Laravel"
         }
     }
@@ -45,6 +46,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         case .home: return "shield.lefthalf.filled"
         case .projects: return "folder"
         case .services: return "server.rack"
+        case .runtimes: return "square.stack.3d.up"
         case .newProject: return "plus.square"
         }
     }
@@ -54,6 +56,8 @@ struct ContentView: View {
     @Environment(AppStore.self) private var store
     @State private var section: AppSection? = .home
     @State private var selectedProject: ProjectState?
+    @State private var onboarding = false
+    @State private var onboardingOffered = false
 
     var body: some View {
         @Bindable var store = store
@@ -86,9 +90,19 @@ struct ContentView: View {
                     ProjectsView(selection: $selectedProject)
                 case .services:
                     ServicesView()
+                case .runtimes:
+                    RuntimesView()
                 case .newProject:
                     NewProjectView(onCreated: { section = .projects })
                 }
+            }
+        }
+        .sheet(isPresented: $onboarding) { OnboardingView() }
+        .onChange(of: store.catalog.isEmpty) { _, empty in
+            // Offer the setup once, as soon as the catalog says what can be installed.
+            if !empty && store.needsOnboarding && !onboardingOffered {
+                onboardingOffered = true
+                onboarding = true
             }
         }
         .alert("StackNest", isPresented: Binding(get: { store.alert != nil }, set: { if !$0 { store.alert = nil } })) {
@@ -98,7 +112,7 @@ struct ContentView: View {
         }
         #if DEBUG
         .onAppear {
-            DebugSnapshot.capture(sections: ["home", "projects", "services", "newProject"]) { name in
+            DebugSnapshot.capture(sections: ["home", "projects", "services", "runtimes", "newProject"]) { name in
                 section = AppSection(rawValue: name)
                 if name == "projects" {
                     selectedProject = store.projects.first { $0.name == "dourovinhateiro" } ?? store.projects.first
@@ -130,6 +144,11 @@ struct SetupBanner: View {
     @Environment(AppStore.self) private var store
 
     var body: some View {
+        if let update = store.appUpdate {
+            banner(icon: "sparkles", color: .teal, text: "Está disponível o StackNest \(update.version).", action: "Transferir") {
+                NSWorkspace.shared.open(update.url)
+            }
+        }
         if !CLI.isInstalled || !store.daemonAlive {
             banner(
                 icon: "exclamationmark.triangle.fill", color: .orange,
@@ -146,7 +165,7 @@ struct SetupBanner: View {
             ) {
                 Task { await store.configureSystem() }
             }
-        } else if store.engineUpdateAvailable {
+        } else if store.engineUpdateAvailable && CLI.isInstalled {
             banner(icon: "arrow.down.circle", color: .blue, text: "Esta versão da app traz um motor mais recente.", action: "Atualizar") {
                 Task { await store.installEngine() }
             }

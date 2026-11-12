@@ -11,6 +11,8 @@ struct NewProjectView: View {
     @State private var major = 0
     @State private var php = ""
     @State private var allowInsecure = false
+    @State private var database: ServiceInstance?
+    @State private var useCache = false
     @State private var running = false
     @State private var output = ""
     @State private var finished: Bool?
@@ -65,6 +67,13 @@ struct NewProjectView: View {
                         }
                     }
                 }
+                Picker("Base de dados", selection: $database) {
+                    Text("SQLite (sem servidor)").tag(ServiceInstance?.none)
+                    ForEach(store.databaseInstances) { Text($0.title).tag(Optional($0)) }
+                }
+                if store.settings?.cache != nil {
+                    Toggle("Usar Valkey para Redis", isOn: $useCache)
+                }
                 Toggle("Instalar mesmo com vulnerabilidades conhecidas", isOn: $allowInsecure)
                 if allowInsecure {
                     Label("O Composer recusa versões com falhas de segurança publicadas e sem correção. Usa isto só para testar uma versão antiga.", systemImage: "exclamationmark.triangle")
@@ -74,7 +83,7 @@ struct NewProjectView: View {
             } header: {
                 Text("Versões")
             } footer: {
-                Text("O StackNest oferece a versão atual do Laravel e as duas anteriores.").font(.caption).foregroundStyle(.secondary)
+                Text("O StackNest oferece a versão atual do Laravel e as duas anteriores. O email do projeto vai para a caixa de correio local.").font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
@@ -139,6 +148,8 @@ struct NewProjectView: View {
         output = ""
         var arguments = ["new", name, "--laravel", String(major), "--php", php]
         if allowInsecure { arguments.append("--allow-insecure") }
+        if let database { arguments += ["--db", "\(database.engine):\(database.version)"] }
+        if useCache { arguments.append("--redis") }
         let status = await CLI.stream(arguments, in: parent) { text in
             Task { @MainActor in output += text }
         }

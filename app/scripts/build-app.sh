@@ -51,7 +51,22 @@ cat > "$bundle/Contents/Info.plist" <<PLIST
 PLIST
 
 identity="${SIGN_IDENTITY:--}"
-codesign --force --options runtime --timestamp=none --sign "$identity" "$bundle/Contents/Helpers/stacknest"
-codesign --force --options runtime --timestamp=none --sign "$identity" "$bundle"
+# Notarization needs a secure timestamp; ad hoc signatures cannot have one.
+timestamp="--timestamp"
+if [ "$identity" = "-" ]; then timestamp="--timestamp=none"; fi
+codesign --force --options runtime "$timestamp" --sign "$identity" "$bundle/Contents/Helpers/stacknest"
+codesign --force --options runtime "$timestamp" --sign "$identity" "$bundle"
 codesign --verify --strict "$bundle"
 echo "Built $bundle"
+
+if [ -n "${MAKE_DMG:-}" ]; then
+	staging="$work/dmg"
+	mkdir -p "$staging"
+	cp -R "$bundle" "$staging/"
+	ln -s /Applications "$staging/Applications"
+	dmg="$dist/StackNest-$version.dmg"
+	rm -f "$dmg"
+	hdiutil create -volname StackNest -srcfolder "$staging" -ov -format UDZO "$dmg"
+	if [ "$identity" != "-" ]; then codesign --sign "$identity" --timestamp "$dmg"; fi
+	echo "Built $dmg"
+fi
