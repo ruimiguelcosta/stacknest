@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -34,6 +35,8 @@ const (
 var Engines = []string{"mariadb", "mysql", "postgres"}
 
 var defaultPort = map[string]int{"mariadb": 3306, "mysql": 3306, "postgres": 5432, "valkey": 6379, "typesense": 8108}
+
+var versionFolder = regexp.MustCompile(`^\d+(\.\d+)?$`)
 
 var titles = map[string]string{
 	"mariadb": "MariaDB", "mysql": "MySQL", "postgres": "PostgreSQL",
@@ -84,7 +87,9 @@ func file(layout paths.Layout) string { return filepath.Join(layout.Root, "servi
 func Load(layout paths.Layout) (Settings, error) {
 	data, err := os.ReadFile(file(layout))
 	if errors.Is(err, os.ErrNotExist) {
-		return adopt(layout), nil
+		settings := adopt(layout)
+		// Saved once, so later changes to the data folder are not mistaken for servers.
+		return settings, Save(layout, settings)
 	}
 	if err != nil {
 		return Settings{}, err
@@ -101,7 +106,7 @@ func adopt(layout paths.Layout) Settings {
 	for _, engine := range Engines {
 		versions, _ := os.ReadDir(layout.Data(engine))
 		for _, v := range versions {
-			if v.IsDir() {
+			if v.IsDir() && versionFolder.MatchString(v.Name()) {
 				settings.Databases = append(settings.Databases, Instance{Engine: engine, Version: v.Name()})
 			}
 		}

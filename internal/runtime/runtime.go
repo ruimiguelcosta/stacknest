@@ -191,6 +191,9 @@ func Install(layout paths.Layout, name, series, version, archive string) error {
 	if err := os.WriteFile(filepath.Join(staging, versionFile), []byte(version+"\n"), 0o644); err != nil {
 		return err
 	}
+	if err := os.Chmod(staging, 0o755); err != nil {
+		return err
+	}
 	old := target + ".old"
 	_ = os.RemoveAll(old)
 	if err := os.Rename(target, old); err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -43,8 +43,10 @@ func TestEnablePicksFreePortsAndRejectsClashes(t *testing.T) {
 
 func TestLoadAdoptsExistingDataAndSaves(t *testing.T) {
 	layout := paths.Layout{Root: t.TempDir()}
-	if err := os.MkdirAll(layout.Data("mariadb", "11.8"), 0o700); err != nil {
-		t.Fatal(err)
+	for _, dir := range []string{layout.Data("mariadb", "11.8"), layout.Data("mariadb", "11.8.backup-1")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	settings, err := Load(layout)
 	if err != nil {
@@ -52,6 +54,9 @@ func TestLoadAdoptsExistingDataAndSaves(t *testing.T) {
 	}
 	if !settings.Mail || len(settings.Databases) != 1 || settings.Databases[0] != (Instance{Engine: "mariadb", Version: "11.8", Port: 3306}) {
 		t.Fatalf("unexpected adoption: %+v", settings)
+	}
+	if _, err := os.Stat(file(layout)); err != nil {
+		t.Error("adopted settings were not saved")
 	}
 	settings.Mail = false
 	if err := Save(layout, settings); err != nil {
