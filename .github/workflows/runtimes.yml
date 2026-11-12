@@ -4,15 +4,27 @@ name: Publish runtimes
 # "runtimes" release that the app downloads from.
 on:
   workflow_dispatch:
+    inputs:
+      php:
+        description: Build PHP
+        type: boolean
+        default: true
+      services:
+        description: "Services to build: all, none, mariadb, postgres, valkey or upstream"
+        default: all
 
 permissions:
   contents: write
 
 jobs:
   php:
+    if: ${{ inputs.php }}
     uses: ./.github/workflows/build-php.yml
   services:
+    if: ${{ inputs.services != 'none' }}
     uses: ./.github/workflows/build-services.yml
+    with:
+      only: ${{ inputs.services }}
 
   publish:
     needs: [php, services]
@@ -30,10 +42,15 @@ jobs:
           merge-multiple: true
       - name: Write the catalog
         run: |
+          gh release download runtimes --pattern runtimes.json --dir previous 2>/dev/null || true
           python3 - <<'EOF'
           import glob, hashlib, json, os, datetime
           repo = os.environ["GITHUB_REPOSITORY"]
+          # Keep the builds this run did not redo.
           runtimes = []
+          rebuilt = {(json.load(open(m))["name"], json.load(open(m))["series"]) for m in glob.glob("artifacts/*.meta.json")}
+          if os.path.exists("previous/runtimes.json"):
+              runtimes = [r for r in json.load(open("previous/runtimes.json"))["runtimes"] if (r["name"], r["series"]) not in rebuilt]
           for meta in sorted(glob.glob("artifacts/*.meta.json")):
               entry = json.load(open(meta))
               path = os.path.join("artifacts", entry["file"])
@@ -41,6 +58,7 @@ jobs:
               entry["size"] = os.path.getsize(path)
               entry["url"] = f"https://github.com/{repo}/releases/download/runtimes/{entry['file']}"
               runtimes.append(entry)
+          runtimes.sort(key=lambda r: (r["name"], r["series"]))
           catalog = {"generated": datetime.datetime.now(datetime.timezone.utc).isoformat(), "runtimes": runtimes}
           json.dump(catalog, open("artifacts/runtimes.json", "w"), indent=2)
           print(json.dumps(catalog, indent=2))
@@ -50,4 +68,5 @@ jobs:
           gh release view runtimes >/dev/null 2>&1 || gh release create runtimes --prerelease \
             --title "Runtimes" \
             --notes "PHP, databases and services that StackNest installs. Built by the Publish runtimes workflow; licences and sources: see each project's site."
-          gh release upload runtimes artifacts/*.tar.gz artifacts/runtimes.json --clobber
+          gh release upload runtimes artifacts/runtimes.json --clobber
+          if ls artifacts/*.tar.gz >/dev/null 2>&1; then gh release upload runtimes artifacts/*.tar.gz --clobber; fi
