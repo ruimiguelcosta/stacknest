@@ -23,6 +23,24 @@ func TestValidateRejectsNonTestDomain(t *testing.T) {
 	}
 }
 
+func TestValidateChecksAliasesAndRoot(t *testing.T) {
+	p := Default("8.4")
+	p.Domain = "app.test"
+	p.Aliases = []string{"www.app.test", "*.app.test"}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	p.Aliases = []string{"app.com"}
+	if err := p.Validate(); err == nil {
+		t.Error("expected an error for a non .test alias")
+	}
+	p.Aliases = nil
+	p.Root = "../elsewhere"
+	if err := p.Validate(); err == nil {
+		t.Error("expected an error for a root outside the project")
+	}
+}
+
 func TestWriteThenFindFromSubdirectory(t *testing.T) {
 	dir := t.TempDir()
 	p := Default("8.4")

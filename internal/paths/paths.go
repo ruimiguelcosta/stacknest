@@ -34,6 +34,12 @@ func (l Layout) Registry() string            { return filepath.Join(l.Root, "pro
 func (l Layout) Project(name string) string  { return filepath.Join(l.Root, "projects", name) }
 func (l Layout) Socket(name string) string   { return filepath.Join(l.Root, "run", name+".sock") }
 func (l Layout) Caddy() string               { return filepath.Join(l.Root, "caddy") }
+func (l Layout) Run() string                 { return filepath.Join(l.Root, "run") }
+func (l Layout) Logs() string                { return filepath.Join(l.Root, "logs") }
+func (l Layout) Data(parts ...string) string {
+	return filepath.Join(append([]string{l.Root, "data"}, parts...)...)
+}
+func (l Layout) Executable() string { return filepath.Join(l.Shims(), "stacknest") }
 func (l Layout) RootCA() string {
 	return filepath.Join(l.Caddy(), "pki", "authorities", "local", "root.crt")
 }

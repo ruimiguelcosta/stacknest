@@ -20,13 +20,18 @@ import (
 
 	"github.com/ruimiguelcosta/stacknest/internal/config"
 	"github.com/ruimiguelcosta/stacknest/internal/daemon"
+	"github.com/ruimiguelcosta/stacknest/internal/herd"
 	"github.com/ruimiguelcosta/stacknest/internal/laravel"
+	"github.com/ruimiguelcosta/stacknest/internal/launchd"
 	"github.com/ruimiguelcosta/stacknest/internal/paths"
 	"github.com/ruimiguelcosta/stacknest/internal/registry"
 	"github.com/ruimiguelcosta/stacknest/internal/runtime"
 )
 
 const usage = `usage:
+  stacknest install            install this binary, the php/composer commands and start at login
+  stacknest uninstall          stop starting at login (projects and data are kept)
+  stacknest import-herd [--dry-run]
   stacknest setup
   stacknest php install ARCHIVE
   stacknest php list
@@ -60,6 +65,16 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	switch {
+	case len(args) == 1 && args[0] == "install":
+		return install(layout, stdout)
+	case len(args) == 1 && args[0] == "uninstall":
+		if err := launchd.Uninstall(); err != nil {
+			return err
+		}
+		fmt.Fprintln(stdout, "StackNest stopped and will no longer start at login. Projects and data were kept.")
+		return nil
+	case len(args) >= 1 && args[0] == "import-herd":
+		return importHerd(layout, args[1:], stdout, stderr)
 	case len(args) == 1 && args[0] == "setup":
 		return setup(layout, stdout)
 	case len(args) == 3 && args[0] == "php" && args[1] == "install":
@@ -100,6 +115,14 @@ func setup(layout paths.Layout, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
+	if err := linkShims(layout, executable); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "Composer installed. Add this to your PATH:\n  %s\n", layout.Shims())
+	return nil
+}
+
+func linkShims(layout paths.Layout, executable string) error {
 	if err := os.MkdirAll(layout.Shims(), 0o755); err != nil {
 		return err
 	}
@@ -112,7 +135,140 @@ func setup(layout paths.Layout, stdout io.Writer) error {
 			return err
 		}
 	}
-	fmt.Fprintf(stdout, "Composer installed. Add this to your PATH:\n  %s\n", layout.Shims())
+	return nil
+}
+
+// install copies this binary into StackNest's home and starts it at login.
+func install(layout paths.Layout, stdout io.Writer) error {
+	source, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if source, err = filepath.EvalSymlinks(source); err != nil {
+		return err
+	}
+	target := layout.Executable()
+	if source != target {
+		if err := copyExecutable(source, target); err != nil {
+			return err
+		}
+	}
+	if err := linkShims(layout, target); err != nil {
+		return err
+	}
+	if _, err := os.Stat(layout.Composer()); errors.Is(err, os.ErrNotExist) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		if err := runtime.InstallComposer(ctx, http.DefaultClient, layout); err != nil {
+			return fmt.Errorf("install composer: %w", err)
+		}
+	}
+	if err := os.MkdirAll(layout.Logs(), 0o755); err != nil {
+		return err
+	}
+	plist := launchd.Plist(target, layout.Root, filepath.Join(layout.Logs(), "stacknest.log"))
+	if err := launchd.Install(plist); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, `StackNest is running and will start at login.
+
+Add this line to ~/.zshrc so php, composer and stacknest come from StackNest:
+  export PATH="%s:$PATH"
+
+Run these once (they ask for your password):
+  sudo mkdir -p /etc/resolver
+  sudo sh -c 'printf "nameserver 127.0.0.1\nport 5354\n" > /etc/resolver/test'
+  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %q
+`, layout.Shims(), layout.RootCA())
+	return nil
+}
+
+// copyExecutable replaces target atomically, so a running daemon keeps its old file.
+func copyExecutable(source, target string) error {
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return err
+	}
+	tmp := target + ".new"
+	if err := os.WriteFile(tmp, data, 0o755); err != nil {
+		return err
+	}
+	return os.Rename(tmp, target)
+}
+
+func importHerd(layout paths.Layout, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("import-herd", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	dryRun := flags.Bool("dry-run", false, "show what would be imported")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	root, err := herd.DefaultRoot()
+	if err != nil {
+		return err
+	}
+	sites, skipped, err := herd.Sites(root)
+	if err != nil {
+		return err
+	}
+	for _, reason := range skipped {
+		fmt.Fprintf(stderr, "skipped %s\n", reason)
+	}
+	installed := installedPHP(layout)
+	if len(installed) == 0 {
+		return errors.New("no PHP version is installed")
+	}
+
+	failed := 0
+	for _, site := range sites {
+		php := site.PHP
+		if !layout.HasPHP(php) {
+			fmt.Fprintf(stderr, "%s: PHP %q is not available, using %s\n", site.Domains[0], php, installed[0])
+			php = installed[0]
+		}
+		project, err := config.Load(site.Dir)
+		existing := err == nil
+		switch {
+		case existing:
+		case errors.Is(err, os.ErrNotExist):
+			project = config.Default(php)
+			project.Domain = site.Domains[0]
+			project.Aliases = site.Domains[1:]
+		default:
+			fmt.Fprintf(stderr, "%s: %v\n", site.Dir, err)
+			failed++
+			continue
+		}
+
+		note := ""
+		if existing {
+			note = " (kept existing " + config.FileName + ")"
+		}
+		fmt.Fprintf(stdout, "https://%s -> %s (PHP %s)%s\n", strings.Join(project.Domains(), ", https://"), site.Dir, project.PHP, note)
+		if site.CustomConfig != "" && project.Caddy == "" {
+			fmt.Fprintf(stdout, "  note: Herd used custom nginx rules from %s; add equivalent caddy directives to %s if the site needs them\n", site.CustomConfig, config.FileName)
+		}
+		if *dryRun {
+			continue
+		}
+		if !existing {
+			if err := project.Write(site.Dir); err != nil {
+				fmt.Fprintf(stderr, "%s: %v\n", site.Dir, err)
+				failed++
+				continue
+			}
+		}
+		if err := registry.Add(layout.Registry(), project.Name(), site.Dir); err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", site.Dir, err)
+			failed++
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d sites were not imported", failed, len(sites))
+	}
 	return nil
 }
 

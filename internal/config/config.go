@@ -29,12 +29,26 @@ type OPcache struct {
 }
 
 type Project struct {
-	PHP      string    `yaml:"php"`
-	Domain   string    `yaml:"domain,omitempty"`
+	PHP     string   `yaml:"php"`
+	Domain  string   `yaml:"domain,omitempty"`
+	Aliases []string `yaml:"aliases,omitempty"`
+	// Root is the document root relative to the project; empty means public/ when it exists.
+	Root     string    `yaml:"root,omitempty"`
 	Database *Database `yaml:"database,omitempty"`
 	Redis    bool      `yaml:"redis"`
 	OPcache  OPcache   `yaml:"opcache"`
 	Mail     bool      `yaml:"mail"`
+	// Caddy replaces the default PHP site handling with raw Caddyfile
+	// directives; {stacknest.php} expands to the project's PHP-FPM address.
+	Caddy string `yaml:"caddy,omitempty"`
+}
+
+// Domains returns the main domain followed by its aliases.
+func (p Project) Domains() []string {
+	if p.Domain == "" {
+		return nil
+	}
+	return append([]string{p.Domain}, p.Aliases...)
 }
 
 // Default returns development-friendly settings: OPcache stays on but keeps
@@ -55,8 +69,20 @@ func (p Project) Validate() error {
 	if p.PHP == "" {
 		return errors.New("php version is required")
 	}
+	if p.Domain == "" && len(p.Aliases) > 0 {
+		return errors.New("aliases need a main domain")
+	}
 	if p.Domain != "" && !domainPattern.MatchString(p.Domain) {
 		return fmt.Errorf("invalid domain %q (expected something like app.test)", p.Domain)
+	}
+	for _, alias := range p.Aliases {
+		// Aliases may be wildcards such as *.app.test, for multi-tenant apps.
+		if !domainPattern.MatchString(strings.TrimPrefix(alias, "*.")) {
+			return fmt.Errorf("invalid alias %q (expected something like www.app.test or *.app.test)", alias)
+		}
+	}
+	if filepath.IsAbs(p.Root) || strings.HasPrefix(filepath.Clean(p.Root), "..") {
+		return fmt.Errorf("root %q must be a path inside the project", p.Root)
 	}
 	if p.OPcache.Memory <= 0 {
 		return errors.New("opcache memory must be positive")

@@ -11,10 +11,18 @@ import (
 	_ "github.com/caddyserver/caddy/v2/modules/standard"
 )
 
+// PHPPlaceholder in Site.Custom expands to the site's PHP-FPM address.
+const PHPPlaceholder = "{stacknest.php}"
+
+// Site is either a PHP project (Root and Socket) or a reverse proxy (Upstream).
 type Site struct {
-	Domain string
-	Root   string
-	Socket string
+	Domains  []string
+	Root     string
+	Socket   string
+	Custom   string
+	Upstream string
+	// Static serves files only, for sites without PHP.
+	Static bool
 }
 
 type Options struct {
@@ -25,7 +33,7 @@ type Options struct {
 // Caddyfile renders the configuration; sites are sorted so output is stable.
 func Caddyfile(options Options, sites []Site) string {
 	sorted := append([]Site(nil), sites...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domain < sorted[j].Domain })
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Domains[0] < sorted[j].Domains[0] })
 
 	var out strings.Builder
 	fmt.Fprintf(&out, `{
@@ -43,29 +51,63 @@ func Caddyfile(options Options, sites []Site) string {
 }
 `, options.HTTPPort, options.HTTPSPort, options.Storage)
 	for _, site := range sorted {
-		fmt.Fprintf(&out, `
-%s {
-	root * %q
-	encode zstd gzip
-	php_fastcgi %q
-	file_server
-}
-`, site.Domain, site.Root, "unix/"+site.Socket)
+		fmt.Fprintf(&out, "\n%s {\n%s}\n", strings.Join(site.Domains, ", "), siteBody(site))
 	}
 	return out.String()
 }
 
+// localOnly drops requests from other machines. macOS lets an unprivileged
+// process bind ports 80 and 443 only on every interface, not on loopback alone.
+const localOnly = "\t@remote not remote_ip 127.0.0.1/8 ::1\n\tabort @remote\n"
+
+func siteBody(site Site) string {
+	if site.Upstream != "" {
+		return localOnly + fmt.Sprintf("\treverse_proxy %s\n", site.Upstream)
+	}
+	php := "unix/" + site.Socket
+	body := localOnly + fmt.Sprintf("\troot * %q\n\tencode zstd gzip\n", site.Root)
+	if site.Custom != "" {
+		return body + indent(strings.ReplaceAll(site.Custom, PHPPlaceholder, fmt.Sprintf("%q", php)))
+	}
+	if site.Static {
+		return body + "\tfile_server\n"
+	}
+	return body + fmt.Sprintf("\tphp_fastcgi %q\n\tfile_server\n", php)
+}
+
+func indent(text string) string {
+	var out strings.Builder
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		out.WriteString("\t" + line + "\n")
+	}
+	return out.String()
+}
+
+// Validate checks that a Caddyfile adapts without loading it.
+func Validate(caddyfile string) error {
+	_, err := adapt(caddyfile)
+	return err
+}
+
 // Apply loads a Caddyfile into the running server.
 func Apply(caddyfile string) error {
+	config, err := adapt(caddyfile)
+	if err != nil {
+		return err
+	}
+	return caddy.Load(config, true)
+}
+
+func adapt(caddyfile string) ([]byte, error) {
 	adapter := caddyconfig.GetAdapter("caddyfile")
 	if adapter == nil {
-		return fmt.Errorf("caddyfile adapter is not available")
+		return nil, fmt.Errorf("caddyfile adapter is not available")
 	}
 	config, _, err := adapter.Adapt([]byte(caddyfile), nil)
 	if err != nil {
-		return fmt.Errorf("adapt caddyfile: %w", err)
+		return nil, fmt.Errorf("adapt caddyfile: %w", err)
 	}
-	return caddy.Load(config, true)
+	return config, nil
 }
 
 func Stop() error { return caddy.Stop() }
