@@ -191,7 +191,7 @@ func trust(layout paths.Layout, stdout io.Writer) error {
 		fmt.Fprintln(stdout, "Nothing to do: .test resolver and local CA are already set up.")
 		return nil
 	}
-	if err := systrust.Apply(systrust.Script(report, defaultDNSPort, layout.RootCA())); err != nil {
+	if err := systrust.Apply(report, defaultDNSPort, layout.RootCA()); err != nil {
 		return err
 	}
 	return doctor(layout, stdout)

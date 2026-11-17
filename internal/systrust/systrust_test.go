@@ -24,17 +24,13 @@ func TestParseResolver(t *testing.T) {
 	}
 }
 
-func TestScriptOnlyFixesMissing(t *testing.T) {
-	if s := Script(Report{ResolverOK: true, CATrusted: true}, 5354, "/ca.crt"); s != "" {
+func TestScriptOnlyFixesResolver(t *testing.T) {
+	if s := Script(Report{ResolverOK: true}, 5354); s != "" {
 		t.Fatalf("expected empty script, got %q", s)
 	}
-	s := Script(Report{ResolverOK: false, CATrusted: true}, 5354, "/ca.crt")
+	s := Script(Report{ResolverOK: false}, 5354)
 	if !strings.Contains(s, "port 5354") || strings.Contains(s, "add-trusted-cert") {
-		t.Fatalf("resolver-only script wrong: %q", s)
-	}
-	s = Script(Report{ResolverOK: true, CATrusted: false}, 5354, "/a b/ca.crt")
-	if strings.Contains(s, "/etc/resolver") || !strings.Contains(s, "'/a b/ca.crt'") {
-		t.Fatalf("ca-only script wrong: %q", s)
+		t.Fatalf("resolver script wrong: %q", s)
 	}
 }
 

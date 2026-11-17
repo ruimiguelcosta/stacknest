@@ -82,33 +82,48 @@ func Check(dnsPort int, rootCA string) Report {
 	return r
 }
 
-// Script is the shell script that fixes whatever Check found missing. It is
-// meant to run once as root (via an admin password prompt).
-func Script(r Report, dnsPort int, rootCA string) string {
-	var lines []string
-	if !r.ResolverOK {
-		lines = append(lines,
-			"mkdir -p /etc/resolver",
-			fmt.Sprintf("printf %s > %s", shellQuote(ResolverContent(dnsPort)), ResolverPath),
-			"dscacheutil -flushcache",
-			"killall -HUP mDNSResponder",
-		)
+// Script is the root shell script for the resolver file ("" when it is fine).
+// The CA is not trusted here: since macOS 11 SecTrustSettingsSetTrustSettings
+// refuses to run as root without user interaction, so TrustCA does it as the
+// user instead.
+func Script(r Report, dnsPort int) string {
+	if r.ResolverOK {
+		return ""
 	}
-	if !r.CATrusted {
-		lines = append(lines, fmt.Sprintf("security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %s", shellQuote(rootCA)))
-	}
-	return strings.Join(lines, " && ")
+	return strings.Join([]string{
+		"mkdir -p /etc/resolver",
+		fmt.Sprintf("printf %s > %s", shellQuote(ResolverContent(dnsPort)), ResolverPath),
+		"dscacheutil -flushcache",
+		"killall -HUP mDNSResponder",
+	}, " && ")
 }
 
-// Apply runs Script behind the standard macOS administrator password dialog.
-func Apply(script string) error {
-	if script == "" {
-		return nil
+// Apply fixes what Check found missing: the resolver behind the macOS
+// administrator dialog, then the CA in the user's trust settings.
+func Apply(r Report, dnsPort int, rootCA string) error {
+	if script := Script(r, dnsPort); script != "" {
+		apple := fmt.Sprintf(`do shell script %s with prompt "O StackNest precisa de ligar os domínios .test." with administrator privileges`, appleQuote(script))
+		if out, err := exec.Command("osascript", "-e", apple).CombinedOutput(); err != nil {
+			return fmt.Errorf("resolver: %v: %s", err, strings.TrimSpace(string(out)))
+		}
 	}
-	apple := fmt.Sprintf(`do shell script %s with prompt "O StackNest precisa de configurar os domínios .test e confiar no seu certificado local." with administrator privileges`, appleQuote(script))
-	out, err := exec.Command("osascript", "-e", apple).CombinedOutput()
+	if !r.CATrusted {
+		return TrustCA(rootCA)
+	}
+	return nil
+}
+
+// TrustCA marks rootCA as a trusted SSL root for the current user. macOS shows
+// its own authorization dialog (password or Touch ID).
+func TrustCA(rootCA string) error {
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+		return err
+	}
+	keychain := home + "/Library/Keychains/login.keychain-db"
+	out, err := exec.Command("security", "add-trusted-cert", "-r", "trustRoot", "-p", "ssl", "-k", keychain, rootCA).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("trust CA: %v: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }
