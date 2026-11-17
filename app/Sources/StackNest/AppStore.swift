@@ -141,7 +141,6 @@ final class AppStore {
     // MARK: - System integration
 
     static let resolverFile = "/etc/resolver/test"
-    static let resolverContents = "nameserver 127.0.0.1\nport 5354\n"
     static var rootCA: String { CLI.home.appendingPathComponent("caddy/pki/authorities/local/root.crt").path }
 
     func checkSystem() async {
@@ -151,19 +150,15 @@ final class AppStore {
         caTrusted = verify.ok
     }
 
-    /// Points .test at StackNest and trusts its certificate authority; macOS asks for the password.
+    /// Points .test at StackNest and trusts its certificate authority via `stacknest trust`
+    /// (the same code path as the CLI); macOS asks for the administrator password once.
     func configureSystem() async {
-        let ca = Self.rootCA.replacingOccurrences(of: "'", with: "'\\''")
-        let shell = """
-        mkdir -p /etc/resolver && printf 'nameserver 127.0.0.1\\nport 5354\\n' > \(Self.resolverFile) && \
-        security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '\(ca)'
-        """
-        let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        let source = "do shell script \"\(escaped)\" with administrator privileges"
-        var errorInfo: NSDictionary?
-        NSAppleScript(source: source)?.executeAndReturnError(&errorInfo)
-        if let errorInfo, (errorInfo[NSAppleScript.errorNumber] as? Int) != -128 {
-            alert = (errorInfo[NSAppleScript.errorMessage] as? String) ?? "Não foi possível configurar o sistema."
+        busy = true
+        defer { busy = false }
+        let result = await CLI.run(["trust"])
+        // -128 is the user cancelling the password dialog.
+        if !result.ok && !result.message.contains("-128") {
+            alert = result.message.isEmpty ? "Não foi possível configurar o sistema." : result.message
         }
         await checkSystem()
     }
