@@ -28,6 +28,7 @@ import (
 	"github.com/ruimiguelcosta/stacknest/internal/registry"
 	"github.com/ruimiguelcosta/stacknest/internal/runtime"
 	"github.com/ruimiguelcosta/stacknest/internal/services"
+	"github.com/ruimiguelcosta/stacknest/internal/systrust"
 )
 
 const usage = `usage:
@@ -35,6 +36,8 @@ const usage = `usage:
   stacknest uninstall          stop starting at login (projects and data are kept)
   stacknest import-herd [--dry-run]
   stacknest setup
+  stacknest doctor             check that https://*.test works in browsers (DNS resolver + trusted CA)
+  stacknest trust              fix what doctor reports (asks for the administrator password once)
   stacknest php install ARCHIVE
   stacknest runtime catalog|list|install NAME [SERIES]|remove NAME SERIES
   stacknest service list|enable NAME [--version V] [--port N]|disable NAME [--version V]
@@ -89,6 +92,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return importHerd(layout, args[1:], stdout, stderr)
 	case len(args) == 1 && args[0] == "setup":
 		return setup(layout, stdout)
+	case len(args) == 1 && args[0] == "doctor":
+		return doctor(layout, stdout)
+	case len(args) == 1 && args[0] == "trust":
+		return trust(layout, stdout)
 	case len(args) == 3 && args[0] == "php" && args[1] == "install":
 		version, err := runtime.InstallPHP(layout, args[2])
 		if err != nil {
@@ -158,6 +165,38 @@ func setup(layout paths.Layout, stdout io.Writer) error {
 	return nil
 }
 
+// defaultDNSPort matches the serve command's --dns-port default.
+const defaultDNSPort = 5354
+
+func doctor(layout paths.Layout, stdout io.Writer) error {
+	report := systrust.Check(defaultDNSPort, layout.RootCA())
+	mark := func(ok bool) string {
+		if ok {
+			return "ok "
+		}
+		return "MISSING"
+	}
+	fmt.Fprintf(stdout, "[%s] .test DNS resolver %s\n", mark(report.ResolverOK), report.ResolverInfo)
+	fmt.Fprintf(stdout, "[%s] trusted local CA %s\n", mark(report.CATrusted), report.CAInfo)
+	if !report.OK() {
+		fmt.Fprintln(stdout, "Run: stacknest trust")
+		return errors.New("browsers cannot open https://*.test yet")
+	}
+	return nil
+}
+
+func trust(layout paths.Layout, stdout io.Writer) error {
+	report := systrust.Check(defaultDNSPort, layout.RootCA())
+	if report.OK() {
+		fmt.Fprintln(stdout, "Nothing to do: .test resolver and local CA are already set up.")
+		return nil
+	}
+	if err := systrust.Apply(systrust.Script(report, defaultDNSPort, layout.RootCA())); err != nil {
+		return err
+	}
+	return doctor(layout, stdout)
+}
+
 func linkShims(layout paths.Layout, executable string) error {
 	if err := os.MkdirAll(layout.Shims(), 0o755); err != nil {
 		return err
@@ -211,11 +250,9 @@ func install(layout paths.Layout, stdout io.Writer) error {
 Add this line to ~/.zshrc so php, composer and stacknest come from StackNest:
   export PATH="%s:$PATH"
 
-Run these once (they ask for your password):
-  sudo mkdir -p /etc/resolver
-  sudo sh -c 'printf "nameserver 127.0.0.1\nport 5354\n" > /etc/resolver/test'
-  sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain %q
-`, layout.Shims(), layout.RootCA())
+Then run once (it asks for your password) so https://*.test opens in browsers:
+  stacknest trust
+`, layout.Shims())
 	return nil
 }
 
