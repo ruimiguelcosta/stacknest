@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -52,6 +53,7 @@ const usage = `usage:
   stacknest set [--php V] [--domain D] [--aliases A,B] [--opcache=BOOL] [--opcache-memory MB] [--jit=BOOL] [--validate-timestamps=BOOL] [--xdebug=BOOL] [--force] [DIR]
   stacknest cves [--refresh]
   stacknest new NAME [--laravel MAJOR] [--php VERSION] [--db ENGINE:VERSION] [--redis] [--mail] [--allow-insecure] [--dry-run]
+  stacknest new NAME --wordpress [--locale pt_PT] [--php VERSION] [--db ENGINE:VERSION] [--title T] [--email E] [--mail=false] [--dry-run]
   stacknest link [--domain NAME.test] [--php VERSION] [DIR]
   stacknest unlink [DIR]
   stacknest list [--json]
@@ -134,6 +136,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return envCommand(layout, args[1:], stdout, stderr)
 	case len(args) >= 1 && args[0] == "mail":
 		return mailCommand(layout, args[1:], stdout, stderr)
+	case len(args) >= 2 && args[0] == "new" && slices.Contains(args[2:], "--wordpress"):
+		rest := slices.DeleteFunc(slices.Clone(args[2:]), func(a string) bool { return a == "--wordpress" })
+		return newWordPress(layout, args[1], rest, stdout, stderr)
 	case len(args) >= 2 && args[0] == "new":
 		return newProject(layout, args[1], args[2:], stdout, stderr)
 	case len(args) >= 1 && args[0] == "link":

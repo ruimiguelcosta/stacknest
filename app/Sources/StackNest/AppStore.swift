@@ -33,11 +33,20 @@ final class AppStore {
     var projects: [ProjectState] { status?.projects ?? [] }
     var services: [ServiceState] { status?.services ?? [] }
     var systemReady: Bool { resolverConfigured && caTrusted }
+    /// Something stops sites from opening in the browser; shown in the menu bar too.
+    var needsAttention: Bool { !daemonAlive || !systemReady }
+    private var ticks = 0
 
     func start() {
         refreshStatus()
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshStatus() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.refreshStatus()
+                // Settings can change outside the app (CLI, another Mac user); re-check every 30 s.
+                self.ticks += 1
+                if self.ticks % 15 == 0 { await self.checkSystem() }
+            }
         }
         engineUpdateAvailable = CLI.updateAvailable
         Task {

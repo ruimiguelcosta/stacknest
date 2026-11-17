@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 @main
@@ -20,7 +21,7 @@ struct StackNestApp: App {
         }
         .windowToolbarStyle(.unified)
 
-        MenuBarExtra("StackNest", systemImage: store.daemonAlive ? "shippingbox.fill" : "shippingbox") {
+        MenuBarExtra("StackNest", systemImage: store.needsAttention ? "exclamationmark.triangle.fill" : "shippingbox.fill") {
             MenuBarContent()
                 .environment(store)
         }
@@ -190,6 +191,13 @@ struct MenuBarContent: View {
 
     var body: some View {
         Text(store.daemonAlive ? "StackNest a correr · \(store.projects.filter(\.running).count) sites" : "StackNest parado")
+        if !store.daemonAlive {
+            Button("Reiniciar o StackNest") { Task { await store.restart() } }
+        } else if !store.systemReady {
+            Text("Os sites .test ainda não abrem no browser")
+            Button("Configurar domínios .test e HTTPS…") { Task { await store.configureSystem() } }
+                .disabled(store.busy)
+        }
         Divider()
         ForEach(store.projects.filter { $0.url != nil }.prefix(20)) { project in
             Button(project.displayName) { NSWorkspace.shared.open(project.url!) }
@@ -203,8 +211,22 @@ struct MenuBarContent: View {
             NSApp.activate(ignoringOtherApps: true)
         }
         Button("Reiniciar serviços") { Task { await store.restart() } }
+        Toggle("Abrir ao iniciar sessão", isOn: Binding(get: { LoginItem.enabled }, set: { LoginItem.set($0) }))
         Divider()
         Button("Sair da app") { NSApp.terminate(nil) }
             .keyboardShortcut("q")
+    }
+}
+
+/// Keeps the app (and its menu bar warning) running after login, when the user asks for it.
+enum LoginItem {
+    static var enabled: Bool { SMAppService.mainApp.status == .enabled }
+
+    static func set(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            NSLog("StackNest login item: \(error.localizedDescription)")
+        }
     }
 }
